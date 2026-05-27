@@ -5,14 +5,14 @@ chain_id = {{.ChainID}}
 explorer_url = "{{.ExplorerURL}}"
 explorer_api_url = "{{.ExplorerAPIURL}}"
 
-# Required deployment configuration (mapped from user-facing config to compose-contracts schema)
-guardian = "{{.GuardianAddress}}"
-proxy_admin_owner = "{{.OwnerAddress}}"
-authorized_proposer = "{{.ProposerAddress}}"
-sp1_verifier = "{{.VerifierAddress}}"
+# ComposeL2OutputOracle initialization parameters
+verifier_address = "{{.VerifierAddress}}"
+owner_address = "{{.OwnerAddress}}"
+proposer_address = "{{.ProposerAddress}}"
 aggregation_vkey = "{{.AggregationVkey}}"
+starting_superblock_number = 0
 
-# Optional deployment configuration (with defaults)
-proof_maturity_delay_seconds = {{.ProofMaturityDelaySeconds}}
-dispute_game_finality_delay_seconds = {{.DisputeGameFinalityDelaySeconds}}
-dispute_game_init_bond = {{.DisputeGameInitBond}}
+# DisputeGameFactory initialization parameters
+# admin_address must be the deployer wallet — ProxyAdmin is created with this owner
+# and upgradeAndCall is called in the same broadcast (same msg.sender).
+admin_address = "{{.DeployerAddress}}"

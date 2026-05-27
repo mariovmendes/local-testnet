@@ -15,6 +15,16 @@ help:
 	@echo 'Targets:'
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_\-]+:.*## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
+### Deploy ###
+.PHONY: deploy
+deploy: ## Full L2 deploy: detect L1 ports, fund wallet, deploy proxy, build & run (start L1 first with make run-l1)
+	./scripts/deploy.sh
+
+.PHONY: deploy-clean
+deploy-clean: ## Wipe all L2 state then redeploy from scratch
+	./scripts/deploy.sh --clean
+######
+
 ### Go ###
 .PHONY: build
 build: ## Build the localnet binary

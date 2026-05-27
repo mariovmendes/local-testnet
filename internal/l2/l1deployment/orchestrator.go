@@ -75,7 +75,7 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2) (DeploymentS
 	defer dockerClient.Close()
 
 	o.logger.Info("instantiating Deployer")
-	opDeployer := deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, dockerClient)
+	opDeployer := deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, "kt-localnet", dockerClient)
 
 	o.logger.Info("initializing Deployer")
 	if err := opDeployer.Init(ctx, cfg.L1ChainID, cfg.ChainConfigs); err != nil {

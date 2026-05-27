@@ -62,7 +62,7 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, deploymentSt
 	var (
 		writer = json.NewWriter()
 
-		opDeployer    = deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, dockerClient)
+		opDeployer    = deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, "kt-localnet", dockerClient)
 		genesisGen    = genesis.NewGenerator(opDeployer, dockerClient, writer, o.localnetDir, cfg.ImageRef(configs.ImageNameOpReth))
 		rollupGen     = rollup.NewGenerator(json.NewReader(), opDeployer, writer, o.localnetDir)
 		secretsGen    = secrets.NewGenerator(writer)

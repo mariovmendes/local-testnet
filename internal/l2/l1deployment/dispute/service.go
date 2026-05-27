@@ -121,11 +121,16 @@ func (s *Service) generateNetworksToml() error {
 		ProofMaturityDelaySeconds       int
 		DisputeGameFinalityDelaySeconds int
 		DisputeGameInitBond             string
+		DeployerAddress                 string
 	}
+
+	// forge/just scripts run natively on the host, not inside Docker, so
+	// host.docker.internal doesn't resolve. Swap it for 127.0.0.1.
+	nativeL1URL := strings.ReplaceAll(s.cfg.L1ElURL, "host.docker.internal", "127.0.0.1")
 
 	data := templateData{
 		NetworkName:                     s.cfg.Dispute.NetworkName,
-		RpcURL:                          s.cfg.L1ElURL,
+		RpcURL:                          nativeL1URL,
 		ChainID:                         s.cfg.L1ChainID,
 		ExplorerURL:                     s.cfg.Dispute.ExplorerURL,
 		ExplorerAPIURL:                  s.cfg.Dispute.ExplorerAPIURL,
@@ -137,6 +142,9 @@ func (s *Service) generateNetworksToml() error {
 		ProofMaturityDelaySeconds:       s.cfg.Dispute.ProofMaturityDelaySeconds,
 		DisputeGameFinalityDelaySeconds: s.cfg.Dispute.DisputeGameFinalityDelaySeconds,
 		DisputeGameInitBond:             s.cfg.Dispute.DisputeGameInitBond,
+		// DeployerAddress must be the ProxyAdmin owner: ProxyAdmin.upgradeAndCall is called
+		// in the same broadcast (same msg.sender = deployer), so admin != deployer => revert.
+		DeployerAddress: s.cfg.Wallet.Address,
 	}
 
 	outputPath := filepath.Join(s.contractsDir, "networks.toml")
