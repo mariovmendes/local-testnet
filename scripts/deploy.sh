@@ -62,17 +62,20 @@ get_l1_ports() {
   inspect=$(kurtosis enclave inspect "$ENCLAVE_NAME" 2>/dev/null) \
     || die "Kurtosis enclave '$ENCLAVE_NAME' not found. Run 'make run-l1' first."
 
-  # EL RPC: the line containing "el-1-geth-lighthouse" and "8545/tcp -> 127.0.0.1:"
+  # EL RPC: ports appear on their own indented lines (separate from the service name line)
   L1_EL_PORT=$(echo "$inspect" \
-    | grep "el-1-geth-lighthouse" \
-    | grep -oE '8545/tcp -> 127\.0\.0\.1:[0-9]+' \
-    | grep -oE '[0-9]+$')
+    | grep -E 'rpc: 8545/tcp -> 127\.0\.0\.1:' \
+    | head -1 \
+    | grep -oE '127\.0\.0\.1:[0-9]+' \
+    | cut -d: -f2)
 
-  # CL HTTP: the line containing "cl-1-lighthouse-geth" and "4000/tcp"
+  # CL HTTP: port is on the cl-1-lighthouse-geth line; URL may have http:// prefix
   L1_CL_PORT=$(echo "$inspect" \
     | grep "cl-1-lighthouse-geth" \
-    | grep -oE '4000/tcp -> 127\.0\.0\.1:[0-9]+' \
-    | grep -oE '[0-9]+$')
+    | grep "4000/tcp" \
+    | grep -oE '127\.0\.0\.1:[0-9]+' \
+    | cut -d: -f2 \
+    | head -1)
 
   [[ -n "$L1_EL_PORT" ]] || die "Could not find EL port (8545). Is the enclave healthy?"
   [[ -n "$L1_CL_PORT" ]] || die "Could not find CL port (4000). Is the enclave healthy?"
@@ -142,9 +145,9 @@ generate_l1_chainconfig() {
 
   if [[ -n "$geth_container" ]]; then
     info "Reading genesis config from container: $geth_container"
+    # Kurtosis places genesis at /network-configs/genesis.json
     chain_config=$(docker exec "$geth_container" \
-      find /el-cl-genesis-data -name "genesis.json" -print -quit 2>/dev/null \
-      | xargs -I{} docker exec "$geth_container" cat {} 2>/dev/null \
+      cat /network-configs/genesis.json 2>/dev/null \
       | python3 -c "
 import json, sys
 try:
@@ -160,6 +163,7 @@ except Exception:
 
   if [[ -z "$chain_config" ]]; then
     warn "Could not read genesis from container. Using hardcoded Kurtosis chain config."
+    # blobSchedule is required by op-node v1.16+ when Prague is active.
     chain_config='{
   "chainId": 3151908,
   "homesteadBlock": 0,
@@ -177,6 +181,10 @@ except Exception:
   "shanghaiTime": 0,
   "cancunTime": 0,
   "pragueTime": 0,
+  "blobSchedule": {
+    "cancun": {"target": 3, "max": 6, "baseFeeUpdateFraction": 3338477},
+    "prague": {"target": 6, "max": 9, "baseFeeUpdateFraction": 5007716}
+  },
   "depositContractAddress": "0x00000000219ab540356cBB839Cbe05303d7705Fa"
 }'
   fi
@@ -184,7 +192,7 @@ except Exception:
   for chain in rollup-a rollup-b; do
     local dir="$REPO_ROOT/.localnet/networks/$chain"
     mkdir -p "$dir"
-    echo "$chain_config" > "$dir/l1-chainconfig.json"
+    printf '%s' "$chain_config" > "$dir/l1-chainconfig.json"
     ok "Wrote $dir/l1-chainconfig.json"
   done
 }
@@ -273,13 +281,13 @@ build_binary() {
 clean_l2() {
   warn "Cleaning L2 state (.localnet/state, .localnet/networks, Docker volumes)..."
   rm -rf "$REPO_ROOT/.localnet/state" "$REPO_ROOT/.localnet/networks"
+  # Stop and remove L2 containers FIRST so volumes are no longer in use
+  docker ps -a --filter "label=stack=localnet-l2" --format "{{.Names}}" \
+    | xargs -r docker rm -f \
+    || true
   docker volume ls --format "{{.Name}}" \
     | grep -E "^localnet_" \
     | xargs -r docker volume rm \
-    || true
-  # Stop and remove L2 containers
-  docker ps -a --filter "label=stack=localnet-l2" --format "{{.Names}}" \
-    | xargs -r docker rm -f \
     || true
   ok "L2 state cleaned."
 }
