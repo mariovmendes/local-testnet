@@ -143,11 +143,15 @@ func (o *Deployer) Apply(ctx context.Context, l1RpcURL, deployerPrivateKey, depl
 	}
 
 	// op-deployer runs inside the kt-localnet Docker network. Kurtosis binds its
-	// EL port to 127.0.0.1 on the host, which is unreachable via host.docker.internal
-	// (resolves to Docker bridge gateway, not loopback). Use the Kurtosis container
-	// name directly so the request stays on the Docker network.
+	// EL port to 127.0.0.1 on the host, which is unreachable from inside Docker
+	// (127.0.0.1 resolves to the container itself; host.docker.internal resolves
+	// to the Docker bridge gateway, also not Kurtosis's loopback port).
+	// Replace all host-side addresses with the Kurtosis container name so the
+	// request stays on the Docker network.
 	dockerL1URL := strings.NewReplacer(
 		"host.docker.internal", "el-1-geth-lighthouse",
+		"127.0.0.1", "el-1-geth-lighthouse",
+		"localhost", "el-1-geth-lighthouse",
 	).Replace(l1RpcURL)
 	// Replace whatever host port was configured with the container-internal port 8545.
 	if strings.Contains(dockerL1URL, "el-1-geth-lighthouse:") {
