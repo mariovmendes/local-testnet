@@ -25,11 +25,14 @@ PROXY_RAW_TX="0xf8a58085174876e800830186a08080b853604580600e600039806000f350fe7f
 KURTOSIS_MNEMONIC="giant issue aisle success illegal bike spike question tent bar rely arctic volcano long crawl hungry vocal artwork sniff fantasy very lucky have athlete"
 
 # ─── colours ──────────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()  { echo -e "${CYAN}[deploy]${NC} $*"; }
-ok()    { echo -e "${GREEN}[deploy]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[deploy]${NC} $*"; }
-die()   { echo -e "${RED}[deploy] ERROR:${NC} $*" >&2; exit 1; }
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[33m'; CYAN='\033[36m'
+BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+info()    { echo -e "  ${DIM}·${NC}  $*"; }
+ok()      { echo -e "  ${GREEN}✓${NC}  $*"; }
+warn()    { echo -e "  ${YELLOW}⚠${NC}  ${YELLOW}$*${NC}"; }
+die()     { echo -e "\n  ${RED}${BOLD}✗  ERROR:${NC}  $*\n" >&2; exit 1; }
+section() { echo -e "\n${BOLD}${CYAN}── $* ${NC}"; }
 
 # ─── prerequisites ────────────────────────────────────────────────────────────
 check_prereqs() {
@@ -610,7 +613,7 @@ build_binary() {
 
 # ─── Stop any running L2 processes (always safe to call) ──────────────────────
 stop_l2_procs() {
-  warn "Stopping any running L2 native processes..."
+  info "Stopping any running L2 native processes..."
   local bin="$REPO_ROOT/.localnet/bin"
 
   # Kill only binaries that live inside .localnet/bin/ — scoping by full path
@@ -652,10 +655,9 @@ print(cfg.get('l2',{}).get('frontend',{}).get('port', 3000))
 
 # ─── Clean (optional) ─────────────────────────────────────────────────────────
 clean_l2() {
-  warn "Stopping any running L2 native processes..."
   stop_l2_procs
 
-  warn "Cleaning L2 state (.localnet/state, .localnet/networks, .localnet/data, .localnet/logs)..."
+  info "Wiping L2 state (state, networks, data, logs)..."
   rm -rf \
     "$REPO_ROOT/.localnet/state" \
     "$REPO_ROOT/.localnet/networks" \
@@ -731,6 +733,7 @@ main() {
     [[ "$arg" == "--clean" ]] && do_clean=true
   done
 
+  section "Preflight"
   check_prereqs
   setup_docker
   get_l1_ports
@@ -738,14 +741,22 @@ main() {
   update_config
 
   if $do_clean; then
+    section "Clean"
     clean_l2
   fi
 
+  section "Binaries"
   setup_binaries
+
+  section "L1 config"
   generate_l1_chainconfig
   deploy_proxy
   fund_wallet
+
+  section "Build"
   build_binary
+
+  section "Launch"
   stop_l2_procs
   run_l2
   wait_for_l2
