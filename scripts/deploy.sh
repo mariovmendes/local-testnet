@@ -611,29 +611,39 @@ build_binary() {
 # ─── Stop any running L2 processes (always safe to call) ──────────────────────
 stop_l2_procs() {
   warn "Stopping any running L2 native processes..."
-  # SIGTERM first, then SIGKILL to guarantee MDBX lock release before new start.
-  pkill    -f "npm run dev" 2>/dev/null || true
-  pkill    -f "vite"        2>/dev/null || true
-  pkill    -f sidecar       2>/dev/null || true
-  pkill    -f publisher     2>/dev/null || true
-  pkill    -f rollup-boost  2>/dev/null || true
-  pkill    -f op-rbuilder   2>/dev/null || true
-  pkill    -f op-proposer   2>/dev/null || true
-  pkill    -f op-batcher    2>/dev/null || true
-  pkill    -f op-node       2>/dev/null || true
-  pkill    -f op-reth       2>/dev/null || true
+  local bin="$REPO_ROOT/.localnet/bin"
+
+  # Kill only binaries that live inside .localnet/bin/ — scoping by full path
+  # prevents pkill from matching unrelated system processes with similar names.
+  pkill    -f "${bin}/op-proposer"  2>/dev/null || true
+  pkill    -f "${bin}/op-batcher"   2>/dev/null || true
+  pkill    -f "${bin}/op-node"      2>/dev/null || true
+  pkill    -f "${bin}/op-reth"      2>/dev/null || true
+  pkill    -f "${bin}/rollup-boost" 2>/dev/null || true
+  pkill    -f "${bin}/op-rbuilder"  2>/dev/null || true
+  pkill    -f "${bin}/sidecar"      2>/dev/null || true
+  pkill    -f "${bin}/publisher"    2>/dev/null || true
   sleep 1
-  pkill -9 -f "npm run dev" 2>/dev/null || true
-  pkill -9 -f "vite"        2>/dev/null || true
-  pkill -9 -f sidecar       2>/dev/null || true
-  pkill -9 -f publisher     2>/dev/null || true
-  pkill -9 -f rollup-boost  2>/dev/null || true
-  pkill -9 -f op-rbuilder   2>/dev/null || true
-  pkill -9 -f op-proposer   2>/dev/null || true
-  pkill -9 -f op-batcher    2>/dev/null || true
-  pkill -9 -f op-node       2>/dev/null || true
-  pkill -9 -f op-reth       2>/dev/null || true
+  pkill -9 -f "${bin}/op-proposer"  2>/dev/null || true
+  pkill -9 -f "${bin}/op-batcher"   2>/dev/null || true
+  pkill -9 -f "${bin}/op-node"      2>/dev/null || true
+  pkill -9 -f "${bin}/op-reth"      2>/dev/null || true
+  pkill -9 -f "${bin}/rollup-boost" 2>/dev/null || true
+  pkill -9 -f "${bin}/op-rbuilder"  2>/dev/null || true
+  pkill -9 -f "${bin}/sidecar"      2>/dev/null || true
+  pkill -9 -f "${bin}/publisher"    2>/dev/null || true
   sleep 1  # let the kernel release file locks after SIGKILL
+
+  # Frontend: kill by port rather than by name so unrelated npm/vite processes
+  # are never touched. Reads the configured port (default 3000).
+  local frontend_port
+  frontend_port=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('frontend',{}).get('port', 3000))
+" 2>/dev/null || echo "3000")
+  lsof -ti ":${frontend_port}" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+
   # Also stop any lingering Flashblocks Docker containers that may have been
   # left by an earlier Docker-based deployment.
   docker rm -f rollup-boost-a rollup-boost-b op-rbuilder-a op-rbuilder-b 2>/dev/null || true
