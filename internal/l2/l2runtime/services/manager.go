@@ -108,6 +108,103 @@ func (m *NativeManager) StartNodeBatcherProposer(ctx context.Context) error {
 	return m.sup.Start(ctx, specs)
 }
 
+// StartRbuilder initialises op-rbuilder datadirs for both chains (if not
+// already done) and starts op-rbuilder-a and op-rbuilder-b.
+func (m *NativeManager) StartRbuilder(ctx context.Context) error {
+	for _, chain := range []configs.L2ChainName{
+		configs.L2ChainNameRollupA,
+		configs.L2ChainNameRollupB,
+	} {
+		if err := m.builder.InitRbuilder(ctx, chain); err != nil {
+			return fmt.Errorf("init rbuilder for %s: %w", chain, err)
+		}
+	}
+
+	specs, err := m.builder.RbuilderSpecs()
+	if err != nil {
+		return fmt.Errorf("build rbuilder specs: %w", err)
+	}
+
+	m.logger.Info("starting op-rbuilder processes", "count", len(specs))
+	return m.sup.Start(ctx, specs)
+}
+
+// WaitRbuilderReady polls op-rbuilder HTTP ports until both respond or
+// 120 s elapses.
+func (m *NativeManager) WaitRbuilderReady(ctx context.Context) error {
+	endpoints := []string{
+		fmt.Sprintf("127.0.0.1:%d", native.RbuilderAHTTPPort),
+		fmt.Sprintf("127.0.0.1:%d", native.RbuilderBHTTPPort),
+	}
+	m.logger.Info("waiting for op-rbuilder HTTP ports", "endpoints", endpoints)
+
+	deadline := time.Now().Add(rethReadyTimeout)
+	for {
+		allReady := true
+		for _, ep := range endpoints {
+			conn, err := net.DialTimeout("tcp", ep, rethDialTimeout)
+			if err != nil {
+				allReady = false
+				break
+			}
+			conn.Close()
+		}
+		if allReady {
+			m.logger.Info("op-rbuilder instances are ready")
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("op-rbuilder did not become ready within %s", rethReadyTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rethPollInterval):
+		}
+	}
+}
+
+// StartRollupBoost starts rollup-boost-a and rollup-boost-b.
+func (m *NativeManager) StartRollupBoost(ctx context.Context) error {
+	specs := m.builder.RollupBoostSpecs()
+	m.logger.Info("starting rollup-boost processes", "count", len(specs))
+	return m.sup.Start(ctx, specs)
+}
+
+// WaitRollupBoostReady polls rollup-boost Engine API ports until both respond.
+func (m *NativeManager) WaitRollupBoostReady(ctx context.Context) error {
+	endpoints := []string{
+		fmt.Sprintf("127.0.0.1:%d", native.RollupBoostAEnginePort),
+		fmt.Sprintf("127.0.0.1:%d", native.RollupBoostBEnginePort),
+	}
+	m.logger.Info("waiting for rollup-boost Engine API ports", "endpoints", endpoints)
+
+	deadline := time.Now().Add(rethReadyTimeout)
+	for {
+		allReady := true
+		for _, ep := range endpoints {
+			conn, err := net.DialTimeout("tcp", ep, rethDialTimeout)
+			if err != nil {
+				allReady = false
+				break
+			}
+			conn.Close()
+		}
+		if allReady {
+			m.logger.Info("rollup-boost instances are ready")
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("rollup-boost did not become ready within %s", rethReadyTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rethPollInterval):
+		}
+	}
+}
+
 // StopAll gracefully shuts down all supervised processes.
 func (m *NativeManager) StopAll(ctx context.Context) {
 	m.logger.Info("stopping all native L2 processes")

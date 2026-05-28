@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ethera-labs/local-testnet/internal/logger"
@@ -37,7 +39,6 @@ var palette = []string{
 
 const colorReset = "\033[0m"
 const colorBold = "\033[1m"
-const colorDim = "\033[2m"
 
 // colorIndex is a global counter so each new process gets the next color.
 var colorIndex atomic.Uint32
@@ -89,14 +90,17 @@ func (s *Supervisor) Start(ctx context.Context, specs []ProcessSpec) error {
 	return nil
 }
 
-func (s *Supervisor) startOne(ctx context.Context, spec ProcessSpec) error {
+func (s *Supervisor) startOne(_ context.Context, spec ProcessSpec) error {
 	logPath := filepath.Join(s.logDir, spec.Name+".log")
 	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
+	// Use context.Background() so the command is not cancelled when the deploy
+	// binary exits. Processes are long-lived daemons; explicit cleanup is done
+	// by stop_l2_procs in deploy.sh before each run.
+	cmd := exec.CommandContext(context.Background(), spec.Binary, spec.Args...)
 
 	// Build env: inherit host env then apply overrides.
 	env := os.Environ()
@@ -105,24 +109,24 @@ func (s *Supervisor) startOne(ctx context.Context, spec ProcessSpec) error {
 	}
 	cmd.Env = env
 
-	// Pipe stdout+stderr through a line reader so we can tee to the log file
-	// and to the terminal simultaneously.
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		lf.Close()
-		return err
-	}
-	cmd.Stdout = pw
-	cmd.Stderr = pw
+	// Write stdout/stderr directly to the log file (not through a pipe).
+	// This is critical: when cmd.Stdout is an *os.File, Go dup2s it into the
+	// child's fd 1/2 without creating an internal goroutine or pipe. The child
+	// inherits its own copy of the fd and continues writing to the log file
+	// even after the parent (deploy binary) exits.
+	cmd.Stdout = lf
+	cmd.Stderr = lf
+
+	// Detach child into its own session so it is unaffected by signals sent
+	// to the parent's process group (e.g. SIGHUP on terminal close).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
-		pw.Close()
-		pr.Close()
 		lf.Close()
 		return err
 	}
-	// Close the write end in the parent so the read end EOFs when the child exits.
-	pw.Close()
+	// lf is held open by the child; the parent no longer needs it.
+	lf.Close()
 
 	// Assign the next color from the palette.
 	idx := colorIndex.Add(1) - 1
@@ -134,19 +138,35 @@ func (s *Supervisor) startOne(ctx context.Context, spec ProcessSpec) error {
 	name := spec.Name
 	nameLen := s.nameLen
 
+	// Tail the log file and display colored prefixed lines on the terminal.
+	// This goroutine exists only for human-readable output during the deploy
+	// phase; it dies when the parent exits but that does not affect the child.
 	go func() {
-		// Left-pad the name to nameLen for column alignment.
-		prefix := fmt.Sprintf("%s%s%-*s%s ", color+colorBold, "", nameLen, name, colorReset)
-
-		scanner := bufio.NewScanner(pr)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			_, _ = fmt.Fprintln(lf, line)
-			fmt.Printf("%s%s\n", prefix, line)
+		rf, err := os.Open(logPath)
+		if err != nil {
+			return
 		}
-		pr.Close()
-		lf.Close()
+		defer rf.Close()
+
+		prefix := fmt.Sprintf("%s%-*s%s ", color+colorBold, nameLen, name, colorReset)
+		reader := bufio.NewReaderSize(rf, 1<<20)
+		for {
+			line, err := reader.ReadString('\n')
+			if len(line) > 0 {
+				// Trim trailing newline for uniform printf formatting.
+				if l := len(line); l > 0 && line[l-1] == '\n' {
+					line = line[:l-1]
+				}
+				fmt.Printf("%s%s\n", prefix, line)
+			}
+			if err == io.EOF {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			if err != nil {
+				return
+			}
+		}
 	}()
 
 	go func() {

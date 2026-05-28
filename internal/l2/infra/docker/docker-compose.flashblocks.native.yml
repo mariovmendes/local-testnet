@@ -1,0 +1,177 @@
+# Flashblocks compose for the hybrid native mode.
+# op-reth runs natively on the host; only op-rbuilder and rollup-boost run here.
+# Both containers reach native op-reth via host.docker.internal.
+# Architecture: op-node (native) → rollup-boost → op-rbuilder (builder) / op-reth (fallback, native)
+
+services:
+
+  # ─── Chain A ────────────────────────────────────────────────────────────────
+
+  op-rbuilder-a:
+    build:
+      context: ${OP_RBUILDER_PATH}
+      dockerfile: Dockerfile
+      target: rbuilder-runtime
+      ssh:
+        - default
+    image: local/op-rbuilder:dev
+    container_name: op-rbuilder-a
+    labels:
+      - "stack=localnet-l2"
+    networks:
+      - localnet-flashblocks
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - op-rbuilder-a-data:/data
+      - ${ROLLUP_A_CONFIG_PATH}:/config:ro
+    ports:
+      - "17552:8551"                          # Engine API
+      - "${FLASHBLOCKS_ROLLUP_A_RPC_PORT}:8545"  # HTTP RPC
+      - "17111:1111"                          # Flashblocks WS
+      - "19001:9001"                          # Metrics
+    command:
+      - node
+      - --chain=/config/genesis.json
+      - --datadir=/data
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.corsdomain=*
+      - --http.api=eth,net,web3,debug,txpool
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/config/jwt.txt
+      - --metrics=0.0.0.0:9001
+      - --flashblocks.enabled
+      - --flashblocks.addr=0.0.0.0
+      - --flashblocks.port=1111
+      - --flashblocks.fixed
+      - --disable-discovery
+      - --max-peers=5
+      - --port=30303
+      - --nat=none
+      - --trusted-only
+      - --trusted-peers=enode://${RETH_A_ENODE_PUBKEY}@host.docker.internal:30303
+
+  rollup-boost-a:
+    image: flashbots/rollup-boost:${ROLLUP_BOOST_IMAGE_TAG:-latest}
+    container_name: rollup-boost-a
+    labels:
+      - "stack=localnet-l2"
+    networks:
+      - localnet-flashblocks
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - op-rbuilder-a
+    environment:
+      L2_URL: "http://host.docker.internal:18551"
+      L2_JWT_PATH: "/config/jwt.txt"
+      BUILDER_URL: "http://op-rbuilder-a:8551"
+      BUILDER_JWT_PATH: "/config/jwt.txt"
+      RPC_HOST: "0.0.0.0"
+      RPC_PORT: "8551"
+      DEBUG_HOST: "0.0.0.0"
+      DEBUG_SERVER_PORT: "5555"
+      FLASHBLOCKS: "true"
+      FLASHBLOCKS_BUILDER_URL: "ws://op-rbuilder-a:1111"
+      FLASHBLOCKS_HOST: "0.0.0.0"
+      FLASHBLOCKS_PORT: "9999"
+      LOG_LEVEL: "info"
+    volumes:
+      - ${ROLLUP_A_CONFIG_PATH}:/config:ro
+    ports:
+      - "17551:8551"  # Engine API (native op-node connects here)
+      - "17555:5555"  # Debug API
+      - "17999:9999"  # Flashblocks SSE
+
+  # ─── Chain B ────────────────────────────────────────────────────────────────
+
+  op-rbuilder-b:
+    build:
+      context: ${OP_RBUILDER_PATH}
+      dockerfile: Dockerfile
+      target: rbuilder-runtime
+      ssh:
+        - default
+    image: local/op-rbuilder:dev
+    container_name: op-rbuilder-b
+    labels:
+      - "stack=localnet-l2"
+    networks:
+      - localnet-flashblocks
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - op-rbuilder-b-data:/data
+      - ${ROLLUP_B_CONFIG_PATH}:/config:ro
+    ports:
+      - "27552:8551"                          # Engine API
+      - "${FLASHBLOCKS_ROLLUP_B_RPC_PORT}:8545"  # HTTP RPC
+      - "27111:1111"                          # Flashblocks WS
+      - "29001:9001"                          # Metrics
+    command:
+      - node
+      - --chain=/config/genesis.json
+      - --datadir=/data
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.corsdomain=*
+      - --http.api=eth,net,web3,debug,txpool
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/config/jwt.txt
+      - --metrics=0.0.0.0:9001
+      - --flashblocks.enabled
+      - --flashblocks.addr=0.0.0.0
+      - --flashblocks.port=1111
+      - --flashblocks.fixed
+      - --disable-discovery
+      - --max-peers=5
+      - --port=30303
+      - --nat=none
+      - --trusted-only
+      - --trusted-peers=enode://${RETH_B_ENODE_PUBKEY}@host.docker.internal:30304
+
+  rollup-boost-b:
+    image: flashbots/rollup-boost:${ROLLUP_BOOST_IMAGE_TAG:-latest}
+    container_name: rollup-boost-b
+    labels:
+      - "stack=localnet-l2"
+    networks:
+      - localnet-flashblocks
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - op-rbuilder-b
+    environment:
+      L2_URL: "http://host.docker.internal:28551"
+      L2_JWT_PATH: "/config/jwt.txt"
+      BUILDER_URL: "http://op-rbuilder-b:8551"
+      BUILDER_JWT_PATH: "/config/jwt.txt"
+      RPC_HOST: "0.0.0.0"
+      RPC_PORT: "8551"
+      DEBUG_HOST: "0.0.0.0"
+      DEBUG_SERVER_PORT: "5555"
+      FLASHBLOCKS: "true"
+      FLASHBLOCKS_BUILDER_URL: "ws://op-rbuilder-b:1111"
+      FLASHBLOCKS_HOST: "0.0.0.0"
+      FLASHBLOCKS_PORT: "9999"
+      LOG_LEVEL: "info"
+    volumes:
+      - ${ROLLUP_B_CONFIG_PATH}:/config:ro
+    ports:
+      - "27551:8551"  # Engine API (native op-node connects here)
+      - "27555:5555"  # Debug API
+      - "27999:9999"  # Flashblocks SSE
+
+networks:
+  localnet-flashblocks:
+    name: localnet-flashblocks
+    driver: bridge
+
+volumes:
+  op-rbuilder-a-data:
+  op-rbuilder-b-data:

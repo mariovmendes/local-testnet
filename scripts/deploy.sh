@@ -424,6 +424,74 @@ build_op_tools_macos() {
   fi
 }
 
+# Build op-rbuilder and rollup-boost from Rust source when Flashblocks is enabled.
+# Both are Rust projects; cargo build is used on all platforms.
+# Builds are cached: binaries are only rebuilt when not already in .localnet/bin/.
+build_flashblocks_binaries() {
+  local dest_dir="$REPO_ROOT/.localnet/bin"
+  local build_dir="$REPO_ROOT/.localnet/build"
+  local services_dir="$REPO_ROOT/.localnet/services"
+  mkdir -p "$build_dir"
+
+  # ── op-rbuilder ──────────────────────────────────────────────────────────
+  # Source is already cloned to .localnet/services/op-rbuilder by the localnet
+  # binary (service.go clones it when flashblocks.enabled=true). If not present
+  # yet (first deploy before service.go has run), clone it here.
+  local rbuilder_src="$services_dir/op-rbuilder"
+  if [[ ! -x "$dest_dir/op-rbuilder" ]]; then
+    if [[ ! -d "$rbuilder_src" ]]; then
+      local rbuilder_url rbuilder_branch
+      rbuilder_url=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('repositories',{}).get('op-rbuilder',{}).get('url','git@github.com:ethera-labs/op-rbuilder.git'))
+" 2>/dev/null || echo "git@github.com:ethera-labs/op-rbuilder.git")
+      rbuilder_branch=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('repositories',{}).get('op-rbuilder',{}).get('branch','stage'))
+" 2>/dev/null || echo "stage")
+      warn "Cloning op-rbuilder@${rbuilder_branch} (first run) ..."
+      mkdir -p "$services_dir"
+      git clone --depth=1 --branch "$rbuilder_branch" "$rbuilder_url" "$rbuilder_src" \
+        || die "Failed to clone op-rbuilder from $rbuilder_url"
+    fi
+    warn "Building op-rbuilder from source (~10-20 min, cached after first build) ..."
+    (cd "$rbuilder_src" && cargo build --release -p op-rbuilder --bin op-rbuilder 2>&1) \
+      || die "Failed to build op-rbuilder"
+    cp "$rbuilder_src/target/release/op-rbuilder" "$dest_dir/op-rbuilder"
+    chmod +x "$dest_dir/op-rbuilder"
+    ok "Built op-rbuilder -> $dest_dir/op-rbuilder"
+  else
+    ok "op-rbuilder already in .localnet/bin, skipping build."
+  fi
+
+  # ── rollup-boost ──────────────────────────────────────────────────────────
+  # rollup-boost is a Rust project from github.com/flashbots/rollup-boost.
+  # No macOS pre-built binaries exist; must build from source.
+  local rb_ver="0.7.15"
+  local rb_src="$build_dir/rollup-boost-v${rb_ver}"
+  if [[ ! -x "$dest_dir/rollup-boost" ]]; then
+    if [[ ! -d "$rb_src" ]]; then
+      warn "Cloning rollup-boost v${rb_ver} (first run) ..."
+      git clone --depth=1 --branch "rollup-boost/v${rb_ver}" \
+        https://github.com/flashbots/rollup-boost.git "$rb_src" \
+        || die "Failed to clone rollup-boost v${rb_ver}"
+      ok "Cloned rollup-boost -> $rb_src (cached for future runs)"
+    else
+      info "Using cached rollup-boost source at $rb_src"
+    fi
+    warn "Building rollup-boost from source (~5-10 min, cached after first build) ..."
+    (cd "$rb_src" && cargo build --release --bin rollup-boost 2>&1) \
+      || die "Failed to build rollup-boost"
+    cp "$rb_src/target/release/rollup-boost" "$dest_dir/rollup-boost"
+    chmod +x "$dest_dir/rollup-boost"
+    ok "Built rollup-boost -> $dest_dir/rollup-boost"
+  else
+    ok "rollup-boost already in .localnet/bin, skipping build."
+  fi
+}
+
 setup_binaries() {
   mkdir -p "$REPO_ROOT/.localnet/bin"
 
@@ -466,6 +534,18 @@ setup_binaries() {
     extract_binary "op-batcher"  "$registry/op-batcher:$(read_image_tag  op-batcher  v1.16.2)" "/usr/local/bin/op-batcher"
     extract_binary "op-proposer" "$registry/op-proposer:$(read_image_tag op-proposer v1.10.0)" "/usr/local/bin/op-proposer"
   fi
+
+  # Build Flashblocks binaries (op-rbuilder + rollup-boost) from Rust source
+  # when Flashblocks is enabled. Runs on all platforms (macOS and Linux).
+  local flashblocks_enabled
+  flashblocks_enabled=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(str(cfg.get('l2',{}).get('flashblocks',{}).get('enabled',False)).lower())
+" 2>/dev/null || echo "false")
+  if [[ "$flashblocks_enabled" == "true" ]]; then
+    build_flashblocks_binaries
+  fi
 }
 
 # ─── Build ─────────────────────────────────────────────────────────────────────
@@ -482,16 +562,23 @@ build_binary() {
 stop_l2_procs() {
   warn "Stopping any running L2 native processes..."
   # SIGTERM first, then SIGKILL to guarantee MDBX lock release before new start.
-  pkill    -f op-proposer 2>/dev/null || true
-  pkill    -f op-batcher  2>/dev/null || true
-  pkill    -f op-node     2>/dev/null || true
-  pkill    -f op-reth     2>/dev/null || true
+  pkill    -f rollup-boost 2>/dev/null || true
+  pkill    -f op-rbuilder  2>/dev/null || true
+  pkill    -f op-proposer  2>/dev/null || true
+  pkill    -f op-batcher   2>/dev/null || true
+  pkill    -f op-node      2>/dev/null || true
+  pkill    -f op-reth      2>/dev/null || true
   sleep 1
-  pkill -9 -f op-proposer 2>/dev/null || true
-  pkill -9 -f op-batcher  2>/dev/null || true
-  pkill -9 -f op-node     2>/dev/null || true
-  pkill -9 -f op-reth     2>/dev/null || true
+  pkill -9 -f rollup-boost 2>/dev/null || true
+  pkill -9 -f op-rbuilder  2>/dev/null || true
+  pkill -9 -f op-proposer  2>/dev/null || true
+  pkill -9 -f op-batcher   2>/dev/null || true
+  pkill -9 -f op-node      2>/dev/null || true
+  pkill -9 -f op-reth      2>/dev/null || true
   sleep 1  # let the kernel release file locks after SIGKILL
+  # Also stop any lingering Flashblocks Docker containers that may have been
+  # left by an earlier Docker-based deployment.
+  docker rm -f rollup-boost-a rollup-boost-b op-rbuilder-a op-rbuilder-b 2>/dev/null || true
   ok "L2 processes stopped."
 }
 

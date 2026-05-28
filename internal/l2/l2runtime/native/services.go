@@ -3,6 +3,7 @@ package native
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,7 +17,7 @@ import (
 
 // Port layout per chain — native host ports, no Docker port mapping.
 const (
-	// Chain A
+	// Chain A — op-reth
 	RethAHTTPPort    = 18545
 	RethAWSPort      = 18546
 	RethAAuthPort    = 18551
@@ -26,27 +27,53 @@ const (
 	BatcherARPCPort  = 18548
 	ProposerARPCPort = 18560
 
-	// Chain B
+	// Chain B — op-reth
 	RethBHTTPPort    = 28545
 	RethBWSPort      = 28546
 	RethBAuthPort    = 28551
-	RethBP2PPort     = 30304 // different from A to avoid port conflict on the same host
+	RethBP2PPort     = 30304
 	RethBMetrics     = 29898
 	NodeBRPCPort     = 29545
 	BatcherBRPCPort  = 28548
 	ProposerBRPCPort = 28560
+
+	// Chain A — op-rbuilder (Flashblocks block builder, fork of op-reth)
+	RbuilderAHTTPPort   = 17545 // HTTP RPC — op-batcher connects here
+	RbuilderAEnginePort = 17552 // Engine API — rollup-boost connects here
+	RbuilderAFlashPort  = 17111 // Flashblocks WebSocket
+	RbuilderAP2PPort    = 30305 // P2P — dials op-reth-a at 30303
+	RbuilderAMetrics    = 19001
+
+	// Chain B — op-rbuilder
+	RbuilderBHTTPPort   = 27545
+	RbuilderBEnginePort = 27552
+	RbuilderBFlashPort  = 27111
+	RbuilderBP2PPort    = 30306 // P2P — dials op-reth-b at 30304
+	RbuilderBMetrics    = 29001
+
+	// Chain A — rollup-boost (Engine API multiplexer)
+	RollupBoostAEnginePort = 17551 // Engine API — op-node connects here
+	RollupBoostADebugPort  = 17555
+	RollupBoostAFlashPort  = 17999 // Flashblocks SSE stream
+
+	// Chain B — rollup-boost
+	RollupBoostBEnginePort = 27551
+	RollupBoostBDebugPort  = 27555
+	RollupBoostBFlashPort  = 27999
 )
 
 // Binaries holds resolved filesystem paths to all required native binaries.
 type Binaries struct {
-	OpReth     string
-	OpNode     string
-	OpBatcher  string
-	OpProposer string
+	OpReth      string
+	OpNode      string
+	OpBatcher   string
+	OpProposer  string
+	OpRbuilder  string // Flashblocks block builder (op-reth fork)
+	RollupBoost string // Engine API multiplexer
 }
 
 // Builder constructs supervisor.ProcessSpec values for the core OP stack
-// services (op-reth, op-node, op-batcher, op-proposer) for both chains.
+// services for both chains.
 type Builder struct {
 	cfg         configs.L2
 	bins        Binaries
@@ -85,6 +112,32 @@ func (b *Builder) InitReth(ctx context.Context, chain configs.L2ChainName) error
 	return nil
 }
 
+// InitRbuilder runs `op-rbuilder init` for chain if its datadir is not yet
+// initialized. Must be called before starting op-rbuilder (when Flashblocks
+// is enabled).
+func (b *Builder) InitRbuilder(ctx context.Context, chain configs.L2ChainName) error {
+	rbuilderData := filepath.Join(b.dataDir, string(chain), "rbuilder")
+	dbVersion := filepath.Join(rbuilderData, "db", "database.version")
+	if _, err := os.Stat(dbVersion); err == nil {
+		return nil // already initialized
+	}
+	if err := os.MkdirAll(rbuilderData, 0o755); err != nil {
+		return fmt.Errorf("mkdir rbuilder datadir: %w", err)
+	}
+	genesisPath := filepath.Join(b.networksDir, string(chain), "genesis.json")
+	cmd := exec.CommandContext(ctx, b.bins.OpRbuilder,
+		"init",
+		"--datadir", rbuilderData,
+		"--chain", genesisPath,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("op-rbuilder init for %s: %w", chain, err)
+	}
+	return nil
+}
+
 // RethSpecs returns ProcessSpecs for op-reth-a and op-reth-b.
 func (b *Builder) RethSpecs() ([]supervisor.ProcessSpec, error) {
 	chainAConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupA]
@@ -112,27 +165,94 @@ func (b *Builder) RethSpecs() ([]supervisor.ProcessSpec, error) {
 	return []supervisor.ProcessSpec{specA, specB}, nil
 }
 
+// RbuilderSpecs returns ProcessSpecs for op-rbuilder-a and op-rbuilder-b.
+// Only call when cfg.Flashblocks.Enabled is true.
+func (b *Builder) RbuilderSpecs() ([]supervisor.ProcessSpec, error) {
+	// op-rbuilder dials op-reth via P2P using op-reth's enode identity.
+	_, rethAEnode, err := deriveEnodePubkey(b.cfg.Flashblocks.RollupAP2PSecretKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("derive rollup-a enode: %w", err)
+	}
+	_, rethBEnode, err := deriveEnodePubkey(b.cfg.Flashblocks.RollupBP2PSecretKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("derive rollup-b enode: %w", err)
+	}
+
+	specA := b.rbuilderSpec(
+		configs.L2ChainNameRollupA,
+		RbuilderAHTTPPort, RbuilderAEnginePort, RbuilderAFlashPort,
+		RbuilderAP2PPort, RbuilderAMetrics,
+		rethAEnode, RethAP2PPort,
+	)
+	specB := b.rbuilderSpec(
+		configs.L2ChainNameRollupB,
+		RbuilderBHTTPPort, RbuilderBEnginePort, RbuilderBFlashPort,
+		RbuilderBP2PPort, RbuilderBMetrics,
+		rethBEnode, RethBP2PPort,
+	)
+	return []supervisor.ProcessSpec{specA, specB}, nil
+}
+
+// RollupBoostSpecs returns ProcessSpecs for rollup-boost-a and rollup-boost-b.
+// Only call when cfg.Flashblocks.Enabled is true.
+func (b *Builder) RollupBoostSpecs() []supervisor.ProcessSpec {
+	specA := b.rollupBoostSpec(
+		configs.L2ChainNameRollupA,
+		RethAAuthPort, RbuilderAEnginePort, RbuilderAFlashPort,
+		RollupBoostAEnginePort, RollupBoostADebugPort, RollupBoostAFlashPort,
+	)
+	specB := b.rollupBoostSpec(
+		configs.L2ChainNameRollupB,
+		RethBAuthPort, RbuilderBEnginePort, RbuilderBFlashPort,
+		RollupBoostBEnginePort, RollupBoostBDebugPort, RollupBoostBFlashPort,
+	)
+	return []supervisor.ProcessSpec{specA, specB}
+}
+
 // NodeBatcherProposerSpecs returns ProcessSpecs for op-node, op-batcher,
 // and op-proposer on both chains (6 processes total).
 func (b *Builder) NodeBatcherProposerSpecs() ([]supervisor.ProcessSpec, error) {
 	type chainLayout struct {
-		name     configs.L2ChainName
-		rethHTTP int
-		rethAuth int
-		nodeRPC  int
-		batchRPC int
-		propRPC  int
+		name         configs.L2ChainName
+		engineRPC    int // Engine API endpoint for op-node (op-reth authrpc, or rollup-boost)
+		rbuilderHTTP int // HTTP RPC for op-batcher (op-reth HTTP, or op-rbuilder)
+		nodeRPC      int
+		batchRPC     int
+		propRPC      int
 	}
 
 	chains := []chainLayout{
-		{configs.L2ChainNameRollupA, RethAHTTPPort, RethAAuthPort, NodeARPCPort, BatcherARPCPort, ProposerARPCPort},
-		{configs.L2ChainNameRollupB, RethBHTTPPort, RethBAuthPort, NodeBRPCPort, BatcherBRPCPort, ProposerBRPCPort},
+		{
+			name:         configs.L2ChainNameRollupA,
+			engineRPC:    RethAAuthPort,
+			rbuilderHTTP: RethAHTTPPort,
+			nodeRPC:      NodeARPCPort,
+			batchRPC:     BatcherARPCPort,
+			propRPC:      ProposerARPCPort,
+		},
+		{
+			name:         configs.L2ChainNameRollupB,
+			engineRPC:    RethBAuthPort,
+			rbuilderHTTP: RethBHTTPPort,
+			nodeRPC:      NodeBRPCPort,
+			batchRPC:     BatcherBRPCPort,
+			propRPC:      ProposerBRPCPort,
+		},
+	}
+
+	// When Flashblocks is enabled, op-node talks to rollup-boost (Engine API
+	// multiplexer) and op-batcher talks to op-rbuilder (optimised block builder).
+	if b.cfg.Flashblocks.Enabled {
+		chains[0].engineRPC = RollupBoostAEnginePort
+		chains[0].rbuilderHTTP = b.cfg.Flashblocks.RollupARPCPort
+		chains[1].engineRPC = RollupBoostBEnginePort
+		chains[1].rbuilderHTTP = b.cfg.Flashblocks.RollupBRPCPort
 	}
 
 	var specs []supervisor.ProcessSpec
 	for _, c := range chains {
-		nodeSpec := b.nodeSpec(c.name, c.rethAuth, c.nodeRPC)
-		batchSpec := b.batcherSpec(c.name, c.rethHTTP, c.nodeRPC, c.batchRPC)
+		nodeSpec := b.nodeSpec(c.name, c.engineRPC, c.nodeRPC)
+		batchSpec := b.batcherSpec(c.name, c.rbuilderHTTP, c.nodeRPC, c.batchRPC)
 		propSpec, err := b.proposerSpec(c.name, c.nodeRPC, c.propRPC)
 		if err != nil {
 			return nil, fmt.Errorf("proposer spec for %s: %w", c.name, err)
@@ -185,6 +305,65 @@ func (b *Builder) rethSpec(chain configs.L2ChainName, httpPort, wsPort, authPort
 			"--rollup.compute-pending-block",
 		},
 	}, nil
+}
+
+func (b *Builder) rbuilderSpec(chain configs.L2ChainName, httpPort, enginePort, flashPort, p2pPort, metricsPort int, rethEnodePubkey string, rethP2PPort int) supervisor.ProcessSpec {
+	configPath := filepath.Join(b.networksDir, string(chain))
+	dataDir := filepath.Join(b.dataDir, string(chain), "rbuilder")
+	suffix := chainSuffix(chain)
+	return supervisor.ProcessSpec{
+		Name:   "op-rbuilder-" + suffix,
+		Binary: b.bins.OpRbuilder,
+		Args: []string{
+			"node",
+			"--chain", filepath.Join(configPath, "genesis.json"),
+			"--datadir", dataDir,
+			"--http",
+			"--http.addr", "0.0.0.0",
+			"--http.port", fmt.Sprintf("%d", httpPort),
+			"--http.corsdomain", "*",
+			"--http.api", "eth,net,web3,debug,txpool",
+			"--authrpc.addr", "0.0.0.0",
+			"--authrpc.port", fmt.Sprintf("%d", enginePort),
+			"--authrpc.jwtsecret", filepath.Join(configPath, "jwt.txt"),
+			"--metrics", fmt.Sprintf("0.0.0.0:%d", metricsPort),
+			"--flashblocks.enabled",
+			"--flashblocks.addr", "0.0.0.0",
+			"--flashblocks.port", fmt.Sprintf("%d", flashPort),
+			"--flashblocks.fixed",
+			"--disable-discovery",
+			"--max-peers", "5",
+			"--port", fmt.Sprintf("%d", p2pPort),
+			"--nat", "none",
+			"--trusted-only",
+			"--trusted-peers", fmt.Sprintf("enode://%s@127.0.0.1:%d", rethEnodePubkey, rethP2PPort),
+			"--ipcpath", fmt.Sprintf("/tmp/rbuilder-%s.ipc", suffix),
+		},
+	}
+}
+
+func (b *Builder) rollupBoostSpec(chain configs.L2ChainName, rethAuthPort, rbuilderEnginePort, rbuilderFlashPort, enginePort, debugPort, flashPort int) supervisor.ProcessSpec {
+	jwtPath := filepath.Join(b.networksDir, string(chain), "jwt.txt")
+	return supervisor.ProcessSpec{
+		Name:   "rollup-boost-" + chainSuffix(chain),
+		Binary: b.bins.RollupBoost,
+		// rollup-boost reads all configuration from env vars.
+		Env: map[string]string{
+			"L2_URL":                  fmt.Sprintf("http://127.0.0.1:%d", rethAuthPort),
+			"L2_JWT_PATH":             jwtPath,
+			"BUILDER_URL":             fmt.Sprintf("http://127.0.0.1:%d", rbuilderEnginePort),
+			"BUILDER_JWT_PATH":        jwtPath,
+			"RPC_HOST":                "0.0.0.0",
+			"RPC_PORT":                fmt.Sprintf("%d", enginePort),
+			"DEBUG_HOST":              "0.0.0.0",
+			"DEBUG_SERVER_PORT":       fmt.Sprintf("%d", debugPort),
+			"FLASHBLOCKS":             "true",
+			"FLASHBLOCKS_BUILDER_URL": fmt.Sprintf("ws://127.0.0.1:%d", rbuilderFlashPort),
+			"FLASHBLOCKS_HOST":        "0.0.0.0",
+			"FLASHBLOCKS_PORT":        fmt.Sprintf("%d", flashPort),
+			"LOG_LEVEL":               "info",
+		},
+	}
 }
 
 func (b *Builder) nodeSpec(chain configs.L2ChainName, rethAuthPort, nodeRPCPort int) supervisor.ProcessSpec {
@@ -250,8 +429,6 @@ func (b *Builder) proposerSpec(chain configs.L2ChainName, nodeRPCPort, proposerR
 		"OP_PROPOSER_RPC_ADDR":          "0.0.0.0",
 		"OP_PROPOSER_RPC_ENABLE_ADMIN":  "true",
 	}
-	// Overlay runtime.env values (e.g. DISPUTE_GAME_FACTORY_ADDRESS,
-	// OP_PROPOSER_GAME_FACTORY_ADDRESS) on top of the defaults above.
 	for k, v := range runtimeEnv {
 		env[k] = v
 	}
@@ -267,7 +444,6 @@ func (b *Builder) proposerSpec(chain configs.L2ChainName, nodeRPCPort, proposerR
 // helpers
 // ---------------------------------------------------------------------------
 
-// readEnvFile parses a KEY=VALUE env file, ignoring blank lines and comments.
 func readEnvFile(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -296,6 +472,18 @@ func normalizePeerKey(hexKey string) (string, error) {
 		return "", fmt.Errorf("invalid p2p secret key: %w", err)
 	}
 	return sk, nil
+}
+
+// deriveEnodePubkey returns the (normalized secret, 64-byte uncompressed
+// enode public key hex) for the given secp256k1 secret.
+func deriveEnodePubkey(secretHex string) (string, string, error) {
+	sk := strings.TrimPrefix(secretHex, "0x")
+	priv, err := crypto.HexToECDSA(sk)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid p2p secret key: %w", err)
+	}
+	pub := crypto.FromECDSAPub(&priv.PublicKey) // 65 bytes: 0x04 || X || Y
+	return sk, hex.EncodeToString(pub[1:]), nil
 }
 
 // chainSuffix converts a chain name constant to the short letter used in

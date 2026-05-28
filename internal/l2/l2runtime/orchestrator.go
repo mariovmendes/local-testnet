@@ -54,7 +54,7 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	// ------------------------------------------------------------------
 	// 1. Resolve native binary paths
 	// ------------------------------------------------------------------
-	bins, err := o.resolveBinaries()
+	bins, err := o.resolveBinaries(cfg.Flashblocks.Enabled)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +88,17 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	// ------------------------------------------------------------------
 	if err := manager.WaitRethReady(ctx); err != nil {
 		return nil, fmt.Errorf("op-reth readiness check failed: %w", err)
+	}
+
+	// ------------------------------------------------------------------
+	// 5b. Start Flashblocks native processes (op-rbuilder + rollup-boost)
+	//     op-rbuilder must be ready before rollup-boost starts;
+	//     rollup-boost must be ready before op-node connects to it.
+	// ------------------------------------------------------------------
+	if cfg.Flashblocks.Enabled {
+		if err := o.startFlashblocksNative(ctx, manager); err != nil {
+			return nil, fmt.Errorf("failed to start flashblocks services: %w", err)
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -131,18 +142,37 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	return deployedContracts, nil
 }
 
-// resolveBinaries locates the four required native binaries: first in
-// .localnet/bin/, then on PATH.
-func (o *Orchestrator) resolveBinaries() (native.Binaries, error) {
-	names := map[string]*string{
-		"op-reth":     nil,
-		"op-node":     nil,
-		"op-batcher":  nil,
-		"op-proposer": nil,
+// startFlashblocksNative starts op-rbuilder and rollup-boost as native
+// processes, waiting for each tier to be ready before starting the next.
+func (o *Orchestrator) startFlashblocksNative(ctx context.Context, manager *services.NativeManager) error {
+	o.logger.Info("starting flashblocks services natively (op-rbuilder + rollup-boost)")
+
+	if err := manager.StartRbuilder(ctx); err != nil {
+		return fmt.Errorf("start op-rbuilder: %w", err)
+	}
+	if err := manager.WaitRbuilderReady(ctx); err != nil {
+		return fmt.Errorf("op-rbuilder readiness: %w", err)
 	}
 
-	resolved := make(map[string]string, len(names))
-	for name := range names {
+	if err := manager.StartRollupBoost(ctx); err != nil {
+		return fmt.Errorf("start rollup-boost: %w", err)
+	}
+	if err := manager.WaitRollupBoostReady(ctx); err != nil {
+		return fmt.Errorf("rollup-boost readiness: %w", err)
+	}
+	return nil
+}
+
+// resolveBinaries locates all required native binaries: first in
+// .localnet/bin/, then on PATH.
+func (o *Orchestrator) resolveBinaries(flashblocksEnabled bool) (native.Binaries, error) {
+	required := []string{"op-reth", "op-node", "op-batcher", "op-proposer"}
+	if flashblocksEnabled {
+		required = append(required, "op-rbuilder", "rollup-boost")
+	}
+
+	resolved := make(map[string]string, len(required))
+	for _, name := range required {
 		path, err := resolveBinary(o.rootDir, name)
 		if err != nil {
 			return native.Binaries{}, fmt.Errorf("failed to locate binary %q: %w", name, err)
@@ -151,10 +181,12 @@ func (o *Orchestrator) resolveBinaries() (native.Binaries, error) {
 	}
 
 	return native.Binaries{
-		OpReth:     resolved["op-reth"],
-		OpNode:     resolved["op-node"],
-		OpBatcher:  resolved["op-batcher"],
-		OpProposer: resolved["op-proposer"],
+		OpReth:      resolved["op-reth"],
+		OpNode:      resolved["op-node"],
+		OpBatcher:   resolved["op-batcher"],
+		OpProposer:  resolved["op-proposer"],
+		OpRbuilder:  resolved["op-rbuilder"],
+		RollupBoost: resolved["rollup-boost"],
 	}, nil
 }
 

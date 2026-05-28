@@ -7,13 +7,14 @@ import (
 	"path/filepath"
 )
 
-//go:embed docker-compose.yml docker-compose.flashblocks.yml docker-compose.sidecar.yml docker-compose.bundler.yml docker-compose.frontend.yml docker-compose.frontend.dev.yml docker-compose.altda.yml docker-compose.opsuccinct.yml
+//go:embed docker-compose.yml docker-compose.flashblocks.yml docker-compose.flashblocks.native.yml docker-compose.sidecar.yml docker-compose.bundler.yml docker-compose.frontend.yml docker-compose.frontend.dev.yml docker-compose.altda.yml docker-compose.opsuccinct.yml
 var embeddedComposeFS embed.FS
 
 const (
-	dockerFileName             = "docker-compose.yml"
-	composeFlashblocksFileName = "docker-compose.flashblocks.yml"
-	composeSidecarFileName     = "docker-compose.sidecar.yml"
+	dockerFileName                   = "docker-compose.yml"
+	composeFlashblocksFileName       = "docker-compose.flashblocks.yml"
+	composeFlashblocksNativeFileName = "docker-compose.flashblocks.native.yml"
+	composeSidecarFileName           = "docker-compose.sidecar.yml"
 	composeBundlerFileName     = "docker-compose.bundler.yml"
 	composeFrontendFileName    = "docker-compose.frontend.yml"
 	composeFrontendDevFileName = "docker-compose.frontend.dev.yml"
@@ -48,6 +49,13 @@ func EnsureComposeFile(localnetDir string) (string, error) {
 // EnsureFlashblocksComposeFile writes the embedded docker-compose.flashblocks.yml to localnetDir and returns its path.
 func EnsureFlashblocksComposeFile(localnetDir string) (string, error) {
 	return ensureEmbeddedFile(localnetDir, composeFlashblocksFileName)
+}
+
+// EnsureFlashblocksNativeComposeFile writes the embedded docker-compose.flashblocks.native.yml
+// to localnetDir and returns its path. This compose file is for the hybrid native mode:
+// op-rbuilder and rollup-boost run in Docker; op-reth runs natively on the host.
+func EnsureFlashblocksNativeComposeFile(localnetDir string) (string, error) {
+	return ensureEmbeddedFile(localnetDir, composeFlashblocksNativeFileName)
 }
 
 // EnsureSidecarComposeFile writes the embedded docker-compose.sidecar.yml to localnetDir and returns its path.

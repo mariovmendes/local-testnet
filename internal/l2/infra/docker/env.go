@@ -285,6 +285,13 @@ func (b *EnvBuilder) readContractAddress(chainName configs.L2ChainName, contract
 // pubkey (no 0x04 prefix), as expected by `--p2p-secret-key-hex` and the enode
 // URL format respectively.
 func derivePeerKeys(secretHex string) (string, string, error) {
+	return DerivePeerKeys(secretHex)
+}
+
+// DerivePeerKeys is the exported form of derivePeerKeys. It takes a 32-byte
+// hex-encoded secp256k1 secret and returns the normalized hex secret (no 0x
+// prefix) and the 64-byte uncompressed enode pubkey (no 0x04 prefix).
+func DerivePeerKeys(secretHex string) (string, string, error) {
 	sk := strings.TrimPrefix(secretHex, "0x")
 	priv, err := crypto.HexToECDSA(sk)
 	if err != nil {
