@@ -23,6 +23,7 @@ type ProcessSpec struct {
 	Binary string
 	Args   []string
 	Env    map[string]string // merged on top of os.Environ()
+	Dir    string            // working directory; defaults to current directory if empty
 }
 
 // ANSI palette — one color per process, cycling if there are more than 8.
@@ -101,6 +102,10 @@ func (s *Supervisor) startOne(_ context.Context, spec ProcessSpec) error {
 	// binary exits. Processes are long-lived daemons; explicit cleanup is done
 	// by stop_l2_procs in deploy.sh before each run.
 	cmd := exec.CommandContext(context.Background(), spec.Binary, spec.Args...)
+
+	if spec.Dir != "" {
+		cmd.Dir = spec.Dir
+	}
 
 	// Build env: inherit host env then apply overrides.
 	env := os.Environ()

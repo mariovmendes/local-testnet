@@ -21,7 +21,7 @@ var rootCmd = &cobra.Command{
 	Use:   appName,
 	Short: "CLI for managing local L1 and L2 network",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		logger.Initialize(slog.LevelDebug)
+		logger.Initialize(slog.LevelInfo)
 
 		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")

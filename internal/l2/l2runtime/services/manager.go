@@ -205,6 +205,80 @@ func (m *NativeManager) WaitRollupBoostReady(ctx context.Context) error {
 	}
 }
 
+// StartPublisher starts the shared Publisher service.
+func (m *NativeManager) StartPublisher(ctx context.Context, spec supervisor.ProcessSpec) error {
+	m.logger.Info("starting publisher")
+	return m.sup.Start(ctx, []supervisor.ProcessSpec{spec})
+}
+
+// WaitPublisherReady polls the publisher metrics HTTP port until it responds.
+func (m *NativeManager) WaitPublisherReady(ctx context.Context) error {
+	ep := fmt.Sprintf("127.0.0.1:%d", native.PublisherMetricsPort)
+	m.logger.Info("waiting for publisher metrics port", "endpoint", ep)
+	deadline := time.Now().Add(rethReadyTimeout)
+	for {
+		conn, err := net.DialTimeout("tcp", ep, rethDialTimeout)
+		if err == nil {
+			conn.Close()
+			m.logger.Info("publisher is ready")
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("publisher did not become ready within %s", rethReadyTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rethPollInterval):
+		}
+	}
+}
+
+// StartSidecars starts sidecar-a and sidecar-b.
+func (m *NativeManager) StartSidecars(ctx context.Context, specs []supervisor.ProcessSpec) error {
+	m.logger.Info("starting sidecar processes", "count", len(specs))
+	return m.sup.Start(ctx, specs)
+}
+
+// WaitSidecarsReady polls the sidecar HTTP ports until both respond.
+func (m *NativeManager) WaitSidecarsReady(ctx context.Context) error {
+	endpoints := []string{
+		fmt.Sprintf("127.0.0.1:%d", native.SidecarAAPIPort),
+		fmt.Sprintf("127.0.0.1:%d", native.SidecarBAPIPort),
+	}
+	m.logger.Info("waiting for sidecar API ports", "endpoints", endpoints)
+	deadline := time.Now().Add(rethReadyTimeout)
+	for {
+		allReady := true
+		for _, ep := range endpoints {
+			conn, err := net.DialTimeout("tcp", ep, rethDialTimeout)
+			if err != nil {
+				allReady = false
+				break
+			}
+			conn.Close()
+		}
+		if allReady {
+			m.logger.Info("sidecars are ready")
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sidecars did not become ready within %s", rethReadyTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rethPollInterval):
+		}
+	}
+}
+
+// StartFrontend starts the Ethera Labs Console (Vite dev server).
+func (m *NativeManager) StartFrontend(ctx context.Context, spec supervisor.ProcessSpec) error {
+	m.logger.Info("starting frontend dev server", "dir", spec.Dir)
+	return m.sup.Start(ctx, []supervisor.ProcessSpec{spec})
+}
+
 // StopAll gracefully shuts down all supervised processes.
 func (m *NativeManager) StopAll(ctx context.Context) {
 	m.logger.Info("stopping all native L2 processes")

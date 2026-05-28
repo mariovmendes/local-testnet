@@ -60,6 +60,14 @@ const (
 	RollupBoostBEnginePort = 27551
 	RollupBoostBDebugPort  = 27555
 	RollupBoostBFlashPort  = 27999
+
+	// Publisher (shared 2PC coordinator)
+	PublisherAPIPort     = 18080 // QUIC — sidecars connect here
+	PublisherMetricsPort = 18081 // HTTP metrics/health
+
+	// Sidecar (cross-chain coordination layer, one per chain)
+	SidecarAAPIPort = 17090
+	SidecarBAPIPort = 27090
 )
 
 // Binaries holds resolved filesystem paths to all required native binaries.
@@ -70,6 +78,9 @@ type Binaries struct {
 	OpProposer  string
 	OpRbuilder  string // Flashblocks block builder (op-reth fork)
 	RollupBoost string // Engine API multiplexer
+	Publisher   string // Shared 2PC coordinator (Rust)
+	Sidecar     string // Cross-chain coordination sidecar (Rust)
+	NPM         string // Node package manager — used to run the frontend dev server
 }
 
 // Builder constructs supervisor.ProcessSpec values for the core OP stack
@@ -260,6 +271,126 @@ func (b *Builder) NodeBatcherProposerSpecs() ([]supervisor.ProcessSpec, error) {
 		specs = append(specs, nodeSpec, batchSpec, propSpec)
 	}
 	return specs, nil
+}
+
+// PublisherSpec returns the ProcessSpec for the shared Publisher service.
+// composeL2OOAddr and gameFactoryAddr come from the L1 deployment state.
+func (b *Builder) PublisherSpec(registryDir string, composeL2OOAddr, gameFactoryAddr string) supervisor.ProcessSpec {
+	return supervisor.ProcessSpec{
+		Name:   "publisher",
+		Binary: b.bins.Publisher,
+		Env: map[string]string{
+			"SERVER_LISTEN_ADDR":        fmt.Sprintf(":%d", PublisherAPIPort),
+			"API_LISTEN_ADDR":           fmt.Sprintf(":%d", PublisherMetricsPort),
+			"METRICS_ENABLED":           "true",
+			"METRICS_PORT":              fmt.Sprintf("%d", PublisherMetricsPort),
+			"LOG_LEVEL":                 "debug",
+			"LOG_PRETTY":                "true",
+			"AUTH_ENABLED":              "false",
+			"PROOFS_ENABLED":            "false",
+			"PROOFS_REQUIRE_PROOF":      "false",
+			"CONSENSUS_TIMEOUT":         "20s",
+			"CONSENSUS_PERIOD_DURATION": "60s",
+			"CONSENSUS_PROOF_WINDOW":    "600s",
+			"L1_RPC_ENDPOINT":           b.cfg.L1ElURL,
+			"L1_SUPERBLOCK_CONTRACT":    composeL2OOAddr,
+			"L1_SHARED_PUBLISHER_PK_HEX": b.cfg.Wallet.PrivateKey,
+			"L1_FROM_ADDRESS":           b.cfg.Wallet.Address,
+			"L1_DISPUTE_GAME_FACTORY":   gameFactoryAddr,
+			"L1_CHAIN_ID":               fmt.Sprintf("%d", b.cfg.L1ChainID),
+			"L1_ETHERA_NETWORK_NAME":    b.cfg.EtheraNetworkName,
+			"REGISTRY_PATH":             registryDir,
+			"SETTLEMENT_L1_RPC_URL":     b.cfg.L1ElURL,
+			"SETTLEMENT_L2OO_ADDRESS":   composeL2OOAddr,
+			"SETTLEMENT_PROPOSER_KEY":   b.cfg.Wallet.PrivateKey,
+		},
+	}
+}
+
+// SidecarSpecs returns ProcessSpecs for sidecar-a and sidecar-b.
+// mailboxA/B are the UniversalBridgeMailbox contract addresses deployed on each chain.
+func (b *Builder) SidecarSpecs(mailboxA, mailboxB string) []supervisor.ProcessSpec {
+	chainAConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupA]
+	chainBConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupB]
+
+	specA := supervisor.ProcessSpec{
+		Name:   "sidecar-a",
+		Binary: b.bins.Sidecar,
+		Env: map[string]string{
+			"SIDECAR_LISTEN_ADDR":                       fmt.Sprintf("0.0.0.0:%d", SidecarAAPIPort),
+			"SIDECAR_PUBLISHER_ENABLED":                 "true",
+			"SIDECAR_PUBLISHER_ADDR":                    fmt.Sprintf("127.0.0.1:%d", PublisherAPIPort),
+			"SIDECAR_CHAIN_ID":                          fmt.Sprintf("%d", chainAConfig.ID),
+			"SIDECAR_CHAIN_RPC":                         fmt.Sprintf("http://127.0.0.1:%d", RbuilderAHTTPPort),
+			"SIDECAR_UNIVERSAL_BRIDGE_MAILBOX_ADDRESS":  mailboxA,
+			"SIDECAR_COORDINATOR_KEY":                   b.cfg.CoordinatorPrivateKey,
+			"SIDECAR_PEERS":                             fmt.Sprintf("%d=http://127.0.0.1:%d", chainBConfig.ID, SidecarBAPIPort),
+			"SIDECAR_LOG_LEVEL":                         "debug",
+			"SIDECAR_LOG_FORMAT":                        "pretty",
+		},
+	}
+	specB := supervisor.ProcessSpec{
+		Name:   "sidecar-b",
+		Binary: b.bins.Sidecar,
+		Env: map[string]string{
+			"SIDECAR_LISTEN_ADDR":                       fmt.Sprintf("0.0.0.0:%d", SidecarBAPIPort),
+			"SIDECAR_PUBLISHER_ENABLED":                 "true",
+			"SIDECAR_PUBLISHER_ADDR":                    fmt.Sprintf("127.0.0.1:%d", PublisherAPIPort),
+			"SIDECAR_CHAIN_ID":                          fmt.Sprintf("%d", chainBConfig.ID),
+			"SIDECAR_CHAIN_RPC":                         fmt.Sprintf("http://127.0.0.1:%d", RbuilderBHTTPPort),
+			"SIDECAR_UNIVERSAL_BRIDGE_MAILBOX_ADDRESS":  mailboxB,
+			"SIDECAR_COORDINATOR_KEY":                   b.cfg.CoordinatorPrivateKey,
+			"SIDECAR_PEERS":                             fmt.Sprintf("%d=http://127.0.0.1:%d", chainAConfig.ID, SidecarAAPIPort),
+			"SIDECAR_LOG_LEVEL":                         "debug",
+			"SIDECAR_LOG_FORMAT":                        "pretty",
+		},
+	}
+	return []supervisor.ProcessSpec{specA, specB}
+}
+
+// FrontendSpec returns the ProcessSpec for the Ethera Labs Console (Vite dev server).
+// frontendDir is the absolute path to the frontend/ source directory.
+// deployedContracts maps contract names to their hex addresses.
+func (b *Builder) FrontendSpec(frontendDir string, deployedContracts map[string]string) supervisor.ProcessSpec {
+	chainAConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupA]
+	chainBConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupB]
+	port := b.cfg.Frontend.Port
+	if port == 0 {
+		port = 3000
+	}
+	env := map[string]string{
+		"VITE_CHAIN_A_ID":                     fmt.Sprintf("%d", chainAConfig.ID),
+		"VITE_CHAIN_B_ID":                     fmt.Sprintf("%d", chainBConfig.ID),
+		"VITE_FLASHBLOCKS_ENABLED":            "true",
+		"VITE_CHAIN_A_BUILDER_RPC":            fmt.Sprintf("http://localhost:%d", RbuilderAHTTPPort),
+		"VITE_CHAIN_A_OP_RETH_RPC":            fmt.Sprintf("http://localhost:%d", RethAHTTPPort),
+		"VITE_CHAIN_B_BUILDER_RPC":            fmt.Sprintf("http://localhost:%d", RbuilderBHTTPPort),
+		"VITE_CHAIN_B_OP_RETH_RPC":            fmt.Sprintf("http://localhost:%d", RethBHTTPPort),
+		"VITE_SIDECAR_A_URL":                  fmt.Sprintf("http://localhost:%d", SidecarAAPIPort),
+		"VITE_SIDECAR_B_URL":                  fmt.Sprintf("http://localhost:%d", SidecarBAPIPort),
+		"VITE_HEALTH_API_URL":                 fmt.Sprintf("http://localhost:%d", SidecarAAPIPort),
+		"VITE_WALLET_PRIVATE_KEY":             b.cfg.Wallet.PrivateKey,
+		"VITE_CHAIN_A_BRIDGE_ADDRESS":         deployedContracts["bridge"],
+		"VITE_CHAIN_B_BRIDGE_ADDRESS":         deployedContracts["bridge"],
+		"VITE_CHAIN_A_TOKEN_ADDRESS":          deployedContracts["token"],
+		"VITE_CHAIN_B_TOKEN_ADDRESS":          deployedContracts["token"],
+		"VITE_CET_FACTORY_ADDRESS":            deployedContracts["cetFactory"],
+		"VITE_CHAIN_A_ETH_LIQUIDITY_ADDRESS":  deployedContracts["ethLiquidity"],
+		"VITE_CHAIN_B_ETH_LIQUIDITY_ADDRESS":  deployedContracts["ethLiquidity"],
+		"VITE_ENTRYPOINT_A":                   deployedContracts["entryPoint"],
+		"VITE_ENTRYPOINT_B":                   deployedContracts["entryPoint"],
+		"VITE_SIMPLE_ACCOUNT_FACTORY_A":       deployedContracts["simpleAccountFactory"],
+		"VITE_SIMPLE_ACCOUNT_FACTORY_B":       deployedContracts["simpleAccountFactory"],
+		"VITE_BUNDLER_A_URL":                  fmt.Sprintf("http://localhost:%d", 17082),
+		"VITE_BUNDLER_B_URL":                  fmt.Sprintf("http://localhost:%d", 27082),
+	}
+	return supervisor.ProcessSpec{
+		Name:   "frontend",
+		Binary: b.bins.NPM,
+		Args:   []string{"run", "dev", "--", "--host", "0.0.0.0", "--port", fmt.Sprintf("%d", port)},
+		Dir:    frontendDir,
+		Env:    env,
+	}
 }
 
 // ---------------------------------------------------------------------------

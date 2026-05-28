@@ -424,6 +424,45 @@ build_op_tools_macos() {
   fi
 }
 
+# Build publisher and sidecar from Rust source when Sidecar is enabled.
+# Both are in already-cloned repos under .localnet/services/.
+build_sidecar_binaries() {
+  local dest_dir="$REPO_ROOT/.localnet/bin"
+  local services_dir="$REPO_ROOT/.localnet/services"
+
+  # ── publisher ──────────────────────────────────────────────────────────────
+  local pub_src="$services_dir/publisher"
+  if [[ ! -x "$dest_dir/publisher" ]]; then
+    if [[ ! -d "$pub_src" ]]; then
+      die "publisher source not found at $pub_src (run make deploy once with sidecar disabled first to clone repos)"
+    fi
+    warn "Building publisher from source (~5-10 min, cached after first build) ..."
+    (cd "$pub_src" && cargo build --locked --release --bin publisher 2>&1) \
+      || die "Failed to build publisher"
+    cp "$pub_src/target/release/publisher" "$dest_dir/publisher"
+    chmod +x "$dest_dir/publisher"
+    ok "Built publisher -> $dest_dir/publisher"
+  else
+    ok "publisher already in .localnet/bin, skipping build."
+  fi
+
+  # ── sidecar ────────────────────────────────────────────────────────────────
+  local sc_src="$services_dir/sidecar"
+  if [[ ! -x "$dest_dir/sidecar" ]]; then
+    if [[ ! -d "$sc_src" ]]; then
+      die "sidecar source not found at $sc_src"
+    fi
+    warn "Building sidecar from source (~5-10 min, cached after first build) ..."
+    (cd "$sc_src" && cargo build --locked --release --bin sidecar 2>&1) \
+      || die "Failed to build sidecar"
+    cp "$sc_src/target/release/sidecar" "$dest_dir/sidecar"
+    chmod +x "$dest_dir/sidecar"
+    ok "Built sidecar -> $dest_dir/sidecar"
+  else
+    ok "sidecar already in .localnet/bin, skipping build."
+  fi
+}
+
 # Build op-rbuilder and rollup-boost from Rust source when Flashblocks is enabled.
 # Both are Rust projects; cargo build is used on all platforms.
 # Builds are cached: binaries are only rebuilt when not already in .localnet/bin/.
@@ -535,6 +574,17 @@ setup_binaries() {
     extract_binary "op-proposer" "$registry/op-proposer:$(read_image_tag op-proposer v1.10.0)" "/usr/local/bin/op-proposer"
   fi
 
+  # Build Sidecar binaries (publisher + sidecar) from Rust source when sidecar enabled.
+  local sidecar_enabled
+  sidecar_enabled=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(str(cfg.get('l2',{}).get('sidecar',{}).get('enabled',False)).lower())
+" 2>/dev/null || echo "false")
+  if [[ "$sidecar_enabled" == "true" ]]; then
+    build_sidecar_binaries
+  fi
+
   # Build Flashblocks binaries (op-rbuilder + rollup-boost) from Rust source
   # when Flashblocks is enabled. Runs on all platforms (macOS and Linux).
   local flashblocks_enabled
@@ -562,19 +612,27 @@ build_binary() {
 stop_l2_procs() {
   warn "Stopping any running L2 native processes..."
   # SIGTERM first, then SIGKILL to guarantee MDBX lock release before new start.
-  pkill    -f rollup-boost 2>/dev/null || true
-  pkill    -f op-rbuilder  2>/dev/null || true
-  pkill    -f op-proposer  2>/dev/null || true
-  pkill    -f op-batcher   2>/dev/null || true
-  pkill    -f op-node      2>/dev/null || true
-  pkill    -f op-reth      2>/dev/null || true
+  pkill    -f "npm run dev" 2>/dev/null || true
+  pkill    -f "vite"        2>/dev/null || true
+  pkill    -f sidecar       2>/dev/null || true
+  pkill    -f publisher     2>/dev/null || true
+  pkill    -f rollup-boost  2>/dev/null || true
+  pkill    -f op-rbuilder   2>/dev/null || true
+  pkill    -f op-proposer   2>/dev/null || true
+  pkill    -f op-batcher    2>/dev/null || true
+  pkill    -f op-node       2>/dev/null || true
+  pkill    -f op-reth       2>/dev/null || true
   sleep 1
-  pkill -9 -f rollup-boost 2>/dev/null || true
-  pkill -9 -f op-rbuilder  2>/dev/null || true
-  pkill -9 -f op-proposer  2>/dev/null || true
-  pkill -9 -f op-batcher   2>/dev/null || true
-  pkill -9 -f op-node      2>/dev/null || true
-  pkill -9 -f op-reth      2>/dev/null || true
+  pkill -9 -f "npm run dev" 2>/dev/null || true
+  pkill -9 -f "vite"        2>/dev/null || true
+  pkill -9 -f sidecar       2>/dev/null || true
+  pkill -9 -f publisher     2>/dev/null || true
+  pkill -9 -f rollup-boost  2>/dev/null || true
+  pkill -9 -f op-rbuilder   2>/dev/null || true
+  pkill -9 -f op-proposer   2>/dev/null || true
+  pkill -9 -f op-batcher    2>/dev/null || true
+  pkill -9 -f op-node       2>/dev/null || true
+  pkill -9 -f op-reth       2>/dev/null || true
   sleep 1  # let the kernel release file locks after SIGKILL
   # Also stop any lingering Flashblocks Docker containers that may have been
   # left by an earlier Docker-based deployment.

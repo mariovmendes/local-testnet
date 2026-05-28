@@ -130,7 +130,26 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	}
 
 	// ------------------------------------------------------------------
-	// 8. Supervise: log if any process dies unexpectedly
+	// 8. Start sidecar stack (publisher + sidecar-a/b) when enabled.
+	//    Must happen after contract deployment so mailbox addresses are known.
+	// ------------------------------------------------------------------
+	if cfg.Sidecar.Enabled {
+		if err := o.startSidecarStack(ctx, cfg, manager, gameFactoryAddr, composeL2OOAddr, deployedContracts); err != nil {
+			return nil, fmt.Errorf("failed to start sidecar stack: %w", err)
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// 9. Start the Ethera Labs Console (Vite dev server) when enabled.
+	// ------------------------------------------------------------------
+	if cfg.Frontend.Enabled || cfg.Frontend.DevEnabled {
+		if err := o.startFrontend(ctx, cfg, manager, deployedContracts); err != nil {
+			return nil, fmt.Errorf("failed to start frontend: %w", err)
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// 10. Supervise: log if any process dies unexpectedly
 	// ------------------------------------------------------------------
 	go func() {
 		if err := sup.Wait(ctx); err != nil {
@@ -140,6 +159,101 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 
 	o.logger.Info("Phase 3: L2 runtime operations completed successfully")
 	return deployedContracts, nil
+}
+
+// startSidecarStack starts the publisher, then sidecar-a and sidecar-b after
+// contract deployment so mailbox addresses are available.
+func (o *Orchestrator) startSidecarStack(
+	ctx context.Context,
+	cfg configs.L2,
+	manager *services.NativeManager,
+	gameFactoryAddr, composeL2OOAddr common.Address,
+	deployedContracts map[configs.L2ChainName]map[contracts.ContractName]common.Address,
+) error {
+	o.logger.Info("starting sidecar stack (publisher + sidecar-a/b) natively")
+
+	mailboxA, mailboxB, err := mailboxAddresses(deployedContracts)
+	if err != nil {
+		return fmt.Errorf("resolve mailbox addresses: %w", err)
+	}
+
+	// Ensure registry directory exists (publisher reads chain definitions from it).
+	registryDir := filepath.Join(o.localnetDir, "registry")
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		return fmt.Errorf("create registry dir: %w", err)
+	}
+
+	dataDir := filepath.Join(o.localnetDir, "data")
+	networksDir := o.networksDir
+	bins, err := o.resolveBinaries(cfg.Flashblocks.Enabled)
+	if err != nil {
+		return fmt.Errorf("resolve binaries for sidecar stack: %w", err)
+	}
+	builder := native.NewBuilder(cfg, bins, networksDir, dataDir)
+
+	pubSpec := builder.PublisherSpec(registryDir, composeL2OOAddr.Hex(), gameFactoryAddr.Hex())
+	if err := manager.StartPublisher(ctx, pubSpec); err != nil {
+		return fmt.Errorf("start publisher: %w", err)
+	}
+	if err := manager.WaitPublisherReady(ctx); err != nil {
+		return fmt.Errorf("publisher readiness: %w", err)
+	}
+
+	sidecarSpecs := builder.SidecarSpecs(mailboxA.Hex(), mailboxB.Hex())
+	if err := manager.StartSidecars(ctx, sidecarSpecs); err != nil {
+		return fmt.Errorf("start sidecars: %w", err)
+	}
+	if err := manager.WaitSidecarsReady(ctx); err != nil {
+		return fmt.Errorf("sidecar readiness: %w", err)
+	}
+	return nil
+}
+
+// startFrontend starts the Ethera Labs Console (Vite dev server via npm run dev).
+func (o *Orchestrator) startFrontend(
+	ctx context.Context,
+	cfg configs.L2,
+	manager *services.NativeManager,
+	deployedContracts map[configs.L2ChainName]map[contracts.ContractName]common.Address,
+) error {
+	frontendDir := filepath.Join(o.rootDir, "frontend")
+	if _, err := os.Stat(frontendDir); err != nil {
+		return fmt.Errorf("frontend directory not found at %s: %w", frontendDir, err)
+	}
+
+	// Flatten deployed contract addresses for the frontend env vars.
+	chainA := deployedContracts[configs.L2ChainNameRollupA]
+	contractMap := map[string]string{
+		"bridge":               chainA[contracts.ContractNameComposeL2ToL2Bridge].Hex(),
+		"token":                chainA[contracts.ContractNameTestToken].Hex(),
+		"cetFactory":           chainA[contracts.ContractNameCetFactory].Hex(),
+		"ethLiquidity":         chainA[contracts.ContractNameComposeETHLiquidity].Hex(),
+		"entryPoint":           chainA[contracts.ContractNameEntryPoint].Hex(),
+		"simpleAccountFactory": chainA[contracts.ContractNameSimpleAccountFactory].Hex(),
+	}
+
+	dataDir := filepath.Join(o.localnetDir, "data")
+	bins, err := o.resolveBinaries(cfg.Flashblocks.Enabled)
+	if err != nil {
+		return fmt.Errorf("resolve binaries for frontend: %w", err)
+	}
+	builder := native.NewBuilder(cfg, bins, o.networksDir, dataDir)
+	spec := builder.FrontendSpec(frontendDir, contractMap)
+
+	// Install npm dependencies if node_modules is absent.
+	nodeModules := filepath.Join(frontendDir, "node_modules")
+	if _, err := os.Stat(nodeModules); err != nil {
+		o.logger.Info("running npm install for frontend (first run)")
+		cmd := exec.CommandContext(ctx, bins.NPM, "install")
+		cmd.Dir = frontendDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("npm install failed: %w", err)
+		}
+	}
+
+	return manager.StartFrontend(ctx, spec)
 }
 
 // startFlashblocksNative starts op-rbuilder and rollup-boost as native
@@ -180,6 +294,13 @@ func (o *Orchestrator) resolveBinaries(flashblocksEnabled bool) (native.Binaries
 		resolved[name] = path
 	}
 
+	// publisher and sidecar are resolved lazily (only when sidecar.enabled=true).
+	publisherPath, _ := resolveBinary(o.rootDir, "publisher")
+	sidecarPath, _ := resolveBinary(o.rootDir, "sidecar")
+
+	// npm is the frontend runner — resolve from PATH only.
+	npmPath, _ := exec.LookPath("npm")
+
 	return native.Binaries{
 		OpReth:      resolved["op-reth"],
 		OpNode:      resolved["op-node"],
@@ -187,6 +308,9 @@ func (o *Orchestrator) resolveBinaries(flashblocksEnabled bool) (native.Binaries
 		OpProposer:  resolved["op-proposer"],
 		OpRbuilder:  resolved["op-rbuilder"],
 		RollupBoost: resolved["rollup-boost"],
+		Publisher:   publisherPath,
+		Sidecar:     sidecarPath,
+		NPM:         npmPath,
 	}, nil
 }
 
