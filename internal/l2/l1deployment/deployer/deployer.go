@@ -14,6 +14,7 @@ import (
 
 	"github.com/ethera-labs/local-testnet/configs"
 	"github.com/ethera-labs/local-testnet/internal/logger"
+	"github.com/ethera-labs/local-testnet/internal/logfilter"
 )
 
 // Deployer wraps the op-deployer binary, running it directly on the host.
@@ -60,8 +61,9 @@ func (o *Deployer) Init(ctx context.Context, l1ChainID int, l2Chains map[configs
 		"--l2-chain-ids", strings.Join(chainIDsStr, ","),
 	)
 	cmd.Dir = o.stateDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	deployerOut := logfilter.NewDeployerWriter(os.Stdout)
+	cmd.Stdout = deployerOut
+	cmd.Stderr = deployerOut
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("HOME=%s", o.stateDir),
 		fmt.Sprintf("DEPLOYER_CACHE_DIR=%s/.cache", o.stateDir),
@@ -86,8 +88,9 @@ func (o *Deployer) Apply(ctx context.Context, l1RpcURL, deployerPrivateKey, depl
 		"--deployment-target", deploymentTarget,
 	)
 	cmd.Dir = o.stateDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	applyOut := logfilter.NewDeployerWriter(os.Stdout)
+	cmd.Stdout = applyOut
+	cmd.Stderr = applyOut
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("HOME=%s", o.stateDir),
 		fmt.Sprintf("DEPLOYER_CACHE_DIR=%s/.cache", o.stateDir),

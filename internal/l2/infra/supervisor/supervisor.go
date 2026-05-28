@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ethera-labs/local-testnet/internal/logger"
+	"github.com/ethera-labs/local-testnet/internal/logfilter"
 )
 
 // ProcessSpec describes a native process to launch.
@@ -162,6 +163,9 @@ func (s *Supervisor) startOne(_ context.Context, spec ProcessSpec) error {
 				if l := len(line); l > 0 && line[l-1] == '\n' {
 					line = line[:l-1]
 				}
+				// Normalise go-ethereum / reth timestamps so all process
+				// logs have a consistent  "LEVEL  message  key=val" shape.
+				line = logfilter.TransformProcessLine(line)
 				fmt.Printf("%s%s\n", prefix, line)
 			}
 			if err == io.EOF {

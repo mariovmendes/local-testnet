@@ -14,6 +14,7 @@ import (
 
 	"github.com/ethera-labs/local-testnet/configs"
 	"github.com/ethera-labs/local-testnet/internal/logger"
+	"github.com/ethera-labs/local-testnet/internal/logfilter"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -201,8 +202,9 @@ func (s *Service) generateEnvFile() error {
 func (s *Service) runJustCommand(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "just", args...)
 	cmd.Dir = s.contractsDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	forgeOut := logfilter.NewForgeWriter(os.Stdout)
+	cmd.Stdout = forgeOut
+	cmd.Stderr = forgeOut
 
 	s.logger.
 		With("command", fmt.Sprintf("just %s", strings.Join(args, " "))).
