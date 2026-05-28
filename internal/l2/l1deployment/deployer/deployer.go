@@ -1,267 +1,144 @@
 package deployer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/ethera-labs/local-testnet/configs"
-	"github.com/ethera-labs/local-testnet/internal/l2/infra/docker"
-	"github.com/ethera-labs/local-testnet/internal/l2/path"
 	"github.com/ethera-labs/local-testnet/internal/logger"
 )
 
-const (
-	publicImageName = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer"
-)
-
-// Deployer wraps the op-deployer tool
+// Deployer wraps the op-deployer binary, running it directly on the host.
+// Running natively (not in Docker) lets op-deployer reach the Kurtosis L1 at
+// 127.0.0.1 without any Docker-network translation.
 type Deployer struct {
-	rootDir         string
-	stateDir        string
-	imageWithTag    string
-	imageEntrypoint string
-	networkMode     string
-	docker          *docker.Client
-	logger          *slog.Logger
+	rootDir    string
+	stateDir   string
+	binaryPath string // absolute path to the op-deployer binary
+	logger     *slog.Logger
 }
 
-// NewDeployer creates a new op-deployer wrapper
-// imageTag should be the version tag (e.g., "v0.3.3")
-// networkMode is an optional Docker network to join (e.g. "kt-localnet" to reach Kurtosis services).
-func NewDeployer(rootDir, stateDir, imageTag, networkMode string, dockerClient *docker.Client) *Deployer {
+// NewDeployer creates a new op-deployer wrapper.
+// binaryPath is the path to the op-deployer binary on the host (e.g. from $PATH or .localnet/bin/).
+func NewDeployer(rootDir, stateDir, binaryPath string) *Deployer {
 	return &Deployer{
-		rootDir:         rootDir,
-		stateDir:        stateDir,
-		imageWithTag:    fmt.Sprintf("%s:%s", publicImageName, imageTag),
-		imageEntrypoint: "/usr/local/bin/op-deployer",
-		networkMode:     networkMode,
-		docker:          dockerClient,
-		logger:          logger.Named("deployer"),
+		rootDir:    rootDir,
+		stateDir:   stateDir,
+		binaryPath: binaryPath,
+		logger:     logger.Named("deployer"),
 	}
 }
 
-// Init initializes the op-deployer state
+// Init initializes the op-deployer state directory.
+// It is idempotent: if state.json already exists the init is skipped.
 func (o *Deployer) Init(ctx context.Context, l1ChainID int, l2Chains map[configs.L2ChainName]configs.Chain) error {
-	o.logger.
-		With("state_dir", o.stateDir).
-		Info("initializing deployer state. Ensuring image exists")
+	o.logger.With("state_dir", o.stateDir).Info("initializing deployer state")
 
-	if err := o.ensureImage(ctx); err != nil {
-		return fmt.Errorf("failed to ensure op-deployer image: %w", err)
-	}
-
-	stateFile := filepath.Join(o.stateDir, stateFile)
-	if _, err := os.Stat(stateFile); err == nil {
-		o.logger.
-			With("file_name", stateFile).
-			Info("state already exists, skipping init")
-
+	stateFilePath := filepath.Join(o.stateDir, "state.json")
+	if _, err := os.Stat(stateFilePath); err == nil {
+		o.logger.With("file_name", stateFilePath).Info("state already exists, skipping init")
 		return nil
 	}
 
-	// When running in Docker, we need to use the host's path for volume mounts
-	// Otherwise Docker daemon won't recognize the path
-	absStateDir, err := path.GetHostPath(o.stateDir)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
-	}
 	var chainIDsStr []string
 	for _, chainConfig := range l2Chains {
 		chainIDsStr = append(chainIDsStr, fmt.Sprintf("%d", chainConfig.ID))
 	}
 
-	o.logger.Info("running docker image")
-	_, err = o.docker.Run(ctx, docker.RunOptions{
-		Image:      o.imageWithTag,
-		Entrypoint: []string{o.imageEntrypoint},
-		Cmd: []string{
-			"init",
-			"--intent-type", "custom",
-			"--l1-chain-id", strconv.Itoa(l1ChainID),
-			"--l2-chain-ids", strings.Join(chainIDsStr, ","),
-		},
-		Env: []string{
-			"HOME=/work",
-			"DEPLOYER_CACHE_DIR=/work/.cache",
-		},
-		Volumes: map[string]string{
-			absStateDir: "/work",
-		},
-		WorkDir:     "/work",
-		User:        fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		NetworkMode: o.networkMode,
-		AutoRemove:  true,
-		StreamLogs:  true,
-	})
+	cmd := exec.CommandContext(ctx, o.binaryPath,
+		"init",
+		"--intent-type", "custom",
+		"--l1-chain-id", strconv.Itoa(l1ChainID),
+		"--l2-chain-ids", strings.Join(chainIDsStr, ","),
+	)
+	cmd.Dir = o.stateDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("HOME=%s", o.stateDir),
+		fmt.Sprintf("DEPLOYER_CACHE_DIR=%s/.cache", o.stateDir),
+	)
 
-	if err != nil {
+	o.logger.Info("running op-deployer init")
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to run op-deployer init: %w", err)
 	}
 
 	o.logger.Info("deployer state initialized successfully")
-
 	return nil
 }
 
-// EnsureImage ensures the op-deployer public image exists
-func (o *Deployer) ensureImage(ctx context.Context) error {
-	logger := o.logger.With("image", o.imageWithTag)
-
-	exists, err := o.docker.ImageExists(ctx, o.imageWithTag)
-	if err != nil {
-		return fmt.Errorf("failed to check image: '%s' existence: %w", o.imageWithTag, err)
-	}
-
-	if exists {
-		logger.Info("image already exists")
-		return nil
-	}
-
-	logger.Info("pulling public image")
-	if err := o.docker.PullImage(ctx, o.imageWithTag); err != nil {
-		return fmt.Errorf("failed to pull image: '%s', %w", o.imageWithTag, err)
-	}
-
-	logger.Info("image pulled successfully")
-	return nil
-}
-
-// Apply runs op-deployer apply to deploy L1 contracts
+// Apply deploys L1 contracts by running op-deployer apply against the L1 RPC.
+// l1RpcURL is used as-is — running natively, 127.0.0.1 reaches Kurtosis directly.
 func (o *Deployer) Apply(ctx context.Context, l1RpcURL, deployerPrivateKey, deploymentTarget string) error {
-	o.logger.
-		With("deployment_target", deploymentTarget).
-		Info("running deployer apply")
+	o.logger.With("deployment_target", deploymentTarget).Info("running deployer apply")
 
-	absStateDir, err := path.GetHostPath(o.stateDir)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
-	}
+	cmd := exec.CommandContext(ctx, o.binaryPath,
+		"apply",
+		"--deployment-target", deploymentTarget,
+	)
+	cmd.Dir = o.stateDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("HOME=%s", o.stateDir),
+		fmt.Sprintf("DEPLOYER_CACHE_DIR=%s/.cache", o.stateDir),
+		fmt.Sprintf("L1_RPC_URL=%s", l1RpcURL),
+		fmt.Sprintf("DEPLOYER_PRIVATE_KEY=%s", deployerPrivateKey),
+	)
 
-	// op-deployer runs inside the kt-localnet Docker network. Kurtosis binds its
-	// EL port to 127.0.0.1 on the host, which is unreachable from inside Docker
-	// (127.0.0.1 resolves to the container itself; host.docker.internal resolves
-	// to the Docker bridge gateway, also not Kurtosis's loopback port).
-	// Replace all host-side addresses with the Kurtosis container name so the
-	// request stays on the Docker network.
-	dockerL1URL := strings.NewReplacer(
-		"host.docker.internal", "el-1-geth-lighthouse",
-		"127.0.0.1", "el-1-geth-lighthouse",
-		"localhost", "el-1-geth-lighthouse",
-	).Replace(l1RpcURL)
-	// Replace whatever host port was configured with the container-internal port 8545.
-	if strings.Contains(dockerL1URL, "el-1-geth-lighthouse:") {
-		if colonIdx := strings.LastIndex(dockerL1URL, ":"); colonIdx != -1 {
-			dockerL1URL = dockerL1URL[:colonIdx] + ":8545"
-		}
-	}
-
-	_, err = o.docker.Run(ctx, docker.RunOptions{
-		Image:      o.imageWithTag,
-		Entrypoint: []string{o.imageEntrypoint},
-		Cmd: []string{
-			"apply",
-			"--deployment-target", deploymentTarget,
-		},
-		Env: []string{
-			"HOME=/work",
-			"DEPLOYER_CACHE_DIR=/work/.cache",
-			fmt.Sprintf("L1_RPC_URL=%s", dockerL1URL),
-			fmt.Sprintf("DEPLOYER_PRIVATE_KEY=%s", deployerPrivateKey),
-		},
-		Volumes: map[string]string{
-			absStateDir: "/work",
-		},
-		WorkDir:     "/work",
-		User:        fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		NetworkMode: o.networkMode,
-		AutoRemove:  true,
-		StreamLogs:  true,
-	})
-
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to run op-deployer apply: %w", err)
 	}
 
 	o.logger.Info("deployer apply completed successfully")
-
 	return nil
 }
 
-// InspectGenesis exports genesis JSON for a chain
+// InspectGenesis exports genesis JSON for a chain.
 func (o *Deployer) InspectGenesis(ctx context.Context, chainID int) (string, error) {
-	absStateDir, err := path.GetHostPath(o.stateDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to get absolute path: %w", err)
-	}
+	cmd := exec.CommandContext(ctx, o.binaryPath,
+		"inspect", "genesis",
+		fmt.Sprintf("%d", chainID),
+	)
+	cmd.Dir = o.stateDir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("HOME=%s", o.stateDir),
+	)
 
-	output, err := o.docker.Run(ctx, docker.RunOptions{
-		Image:      o.imageWithTag,
-		Entrypoint: []string{o.imageEntrypoint},
-		Cmd: []string{
-			"inspect",
-			"genesis",
-			fmt.Sprintf("%d", chainID),
-		},
-		Env: []string{
-			"HOME=/work",
-		},
-		Volumes: map[string]string{
-			absStateDir: "/work",
-		},
-		WorkDir:    "/work",
-		User:       fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		AutoRemove: true,
-		CaptureOut: true,
-	})
-
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to run op-deployer inspect genesis: %w", err)
 	}
 
-	return output, nil
+	return stdout.String(), nil
 }
 
-// InspectRollup exports rollup config for a chain
+// InspectRollup exports rollup config for a chain to outputPath.
 func (o *Deployer) InspectRollup(ctx context.Context, chainID int, outputPath string) error {
-	absStateDir, err := path.GetHostPath(o.stateDir)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
-	}
+	cmd := exec.CommandContext(ctx, o.binaryPath,
+		"inspect", "rollup",
+		"--outfile", outputPath,
+		fmt.Sprintf("%d", chainID),
+	)
+	cmd.Dir = o.stateDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("HOME=%s", o.stateDir),
+	)
 
-	outputDir := filepath.Dir(outputPath)
-	absOutputDir, err := path.GetHostPath(outputDir)
-	if err != nil {
-		return fmt.Errorf("failed to get host path for output dir: %w", err)
-	}
-	outputFile := filepath.Base(outputPath)
-
-	_, err = o.docker.Run(ctx, docker.RunOptions{
-		Image:      o.imageWithTag,
-		Entrypoint: []string{o.imageEntrypoint},
-		Cmd: []string{
-			"inspect",
-			"rollup",
-			"--outfile", fmt.Sprintf("/output/%s", outputFile),
-			fmt.Sprintf("%d", chainID),
-		},
-		Env: []string{
-			"HOME=/work",
-		},
-		Volumes: map[string]string{
-			absStateDir:  "/work",
-			absOutputDir: "/output",
-		},
-		WorkDir:    "/work",
-		User:       fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		AutoRemove: true,
-	})
-
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to run op-deployer inspect rollup: %w", err)
 	}
 

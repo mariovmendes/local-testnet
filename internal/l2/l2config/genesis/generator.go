@@ -1,18 +1,18 @@
 package genesis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 
-	"github.com/ethera-labs/local-testnet/internal/l2/infra/docker"
 	"github.com/ethera-labs/local-testnet/internal/l2/infra/filesystem"
-	"github.com/ethera-labs/local-testnet/internal/l2/path"
 	"github.com/ethera-labs/local-testnet/internal/logger"
 )
 
@@ -30,24 +30,23 @@ type (
 	}
 
 	Generator struct {
-		deployer    deployer
-		docker      *docker.Client
-		writer      filesystem.Writer
-		localnetDir string
-		opRethImage string
-		logger      *slog.Logger
+		deployer        deployer
+		writer          filesystem.Writer
+		localnetDir     string
+		opRethBinaryPath string
+		logger          *slog.Logger
 	}
 )
 
 // NewGenerator creates a new genesis generator.
-func NewGenerator(deployer deployer, dockerClient *docker.Client, writer filesystem.Writer, localnetDir, opRethImage string) *Generator {
+// opRethBinaryPath is the path to the op-reth binary on the host.
+func NewGenerator(deployer deployer, writer filesystem.Writer, localnetDir, opRethBinaryPath string) *Generator {
 	return &Generator{
-		deployer:    deployer,
-		docker:      dockerClient,
-		writer:      writer,
-		localnetDir: localnetDir,
-		opRethImage: opRethImage,
-		logger:      logger.Named("genesis_generator"),
+		deployer:        deployer,
+		writer:          writer,
+		localnetDir:     localnetDir,
+		opRethBinaryPath: opRethBinaryPath,
+		logger:          logger.Named("genesis_generator"),
 	}
 }
 
@@ -124,8 +123,8 @@ func (g *Generator) Generate(ctx context.Context, chainID int, path string, wall
 	return hash, nil
 }
 
-// computeGenesisHash runs op-reth init in a one-shot container and extracts
-// the genesis hash from its "Genesis block written hash=0x..." log line.
+// computeGenesisHash runs op-reth init natively and extracts the genesis hash
+// from its "Genesis block written hash=0x..." log line.
 // Stock go-ethereum's core.Genesis cannot compute OP-Stack hashes correctly
 // past Isthmus, so we defer to the actual EL.
 func (g *Generator) computeGenesisHash(ctx context.Context, genesis map[string]any) (string, error) {
@@ -144,36 +143,31 @@ func (g *Generator) computeGenesisHash(ctx context.Context, genesis map[string]a
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal genesis: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, GenesisFileName), genesisJSON, 0o644); err != nil {
+	genesisFile := filepath.Join(tmpDir, GenesisFileName)
+	if err := os.WriteFile(genesisFile, genesisJSON, 0o644); err != nil {
 		return "", fmt.Errorf("failed to write genesis file: %w", err)
 	}
 
-	hostTmpDir, err := path.GetHostPath(tmpDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to get host path for tmpDir: %w", err)
+	dataDir := filepath.Join(tmpDir, "data")
+
+	g.logger.With("binary", g.opRethBinaryPath).Info("running op-reth init")
+
+	cmd := exec.CommandContext(ctx, g.opRethBinaryPath,
+		"init",
+		"--datadir", dataDir,
+		"--chain", genesisFile,
+	)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to run op-reth init: %w\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
 	}
 
-	g.logger.With("image", g.opRethImage).Info("running op-reth init")
-
-	output, err := g.docker.Run(ctx, docker.RunOptions{
-		Image: g.opRethImage,
-		Cmd: []string{
-			"init",
-			"--datadir=/tmp/data",
-			"--chain=/genesis/" + GenesisFileName,
-		},
-		Volumes: map[string]string{
-			hostTmpDir: "/genesis",
-		},
-		AutoRemove: true,
-		CaptureOut: true,
-		CaptureErr: true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to run op-reth init: %w", err)
-	}
-
-	clean := ansiRe.ReplaceAllString(output, "")
+	// op-reth writes the genesis hash to stderr
+	combined := outBuf.String() + errBuf.String()
+	clean := ansiRe.ReplaceAllString(combined, "")
 	match := genesisHashRe.FindStringSubmatch(clean)
 	if len(match) < 2 {
 		return "", fmt.Errorf("genesis hash not found in op-reth init output:\n%s", clean)

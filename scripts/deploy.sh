@@ -6,6 +6,7 @@
 #   ./scripts/deploy.sh --clean  # wipe L2 state and redeploy from scratch
 #
 # Prerequisites: kurtosis, cast (foundry), docker, go, just, python3
+# op-deployer and op-reth are extracted automatically into .localnet/bin/ if not already present.
 
 set -euo pipefail
 
@@ -101,29 +102,29 @@ verify_l1() {
 update_config() {
   info "Updating config.yaml with current L1 ports..."
 
-  # Replace FILL_EL_PORT / FILL_CL_PORT placeholders AND previously set ports
+  # Replace any existing port in l1-el-url / l1-cl-url lines with the current port
   python3 - "$CONFIG_FILE" "$L1_EL_PORT" "$L1_CL_PORT" <<'PYEOF'
 import sys, re
 
 path, el_port, cl_port = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(path).read()
 
-# Replace l1-el-url line
+# Replace l1-el-url line (any host/port)
 text = re.sub(
-    r'(l1-el-url:\s*)http://host\.docker\.internal:\S+',
-    f'l1-el-url: http://host.docker.internal:{el_port}',
+    r'(l1-el-url:\s*)\S+',
+    f'l1-el-url: http://127.0.0.1:{el_port}',
     text
 )
-# Replace l1-cl-url line
+# Replace l1-cl-url line (any host/port)
 text = re.sub(
-    r'(l1-cl-url:\s*)http://host\.docker\.internal:\S+',
-    f'l1-cl-url: http://host.docker.internal:{cl_port}',
+    r'(l1-cl-url:\s*)\S+',
+    f'l1-cl-url: http://127.0.0.1:{cl_port}',
     text
 )
 
 open(path, 'w').write(text)
-print(f"  l1-el-url -> host.docker.internal:{el_port}")
-print(f"  l1-cl-url -> host.docker.internal:{cl_port}")
+print(f"  l1-el-url -> 127.0.0.1:{el_port}")
+print(f"  l1-cl-url -> 127.0.0.1:{cl_port}")
 PYEOF
 
   ok "config.yaml updated."
@@ -267,6 +268,206 @@ fund_wallet() {
   fi
 }
 
+# ─── Native binaries ──────────────────────────────────────────────────────────
+# Resolves all five OP-stack binaries into .localnet/bin/.
+#
+#  macOS : op-deployer and op-reth are downloaded from GitHub releases;
+#          op-node / op-batcher / op-proposer have no pre-built macOS releases
+#          and are compiled from the optimism monorepo (~5 min, first run only).
+#  Linux : all five are extracted from Docker images (original behaviour).
+#
+# All helpers skip silently if the binary already exists or is found on PATH.
+
+read_image_tag() {
+  local key="$1" default="$2"
+  python3 -c "
+try:
+    import yaml
+    cfg = yaml.safe_load(open('${CONFIG_FILE}'))
+    print(cfg['l2']['images']['${key}']['tag'])
+except Exception:
+    print('${default}')
+" 2>/dev/null || echo "$default"
+}
+
+# Linux: pull one binary out of a Docker image.
+extract_binary() {
+  local bin_name="$1"
+  local image="$2"
+  local container_path="$3"
+  local dest="$REPO_ROOT/.localnet/bin/$bin_name"
+
+  if [[ -x "$dest" ]]; then
+    ok "$bin_name already in .localnet/bin, skipping."; return
+  fi
+  if command -v "$bin_name" &>/dev/null; then
+    ok "$bin_name found in PATH ($(command -v "$bin_name")), skipping."; return
+  fi
+  info "Extracting $bin_name from $image ..."
+  local cid
+  cid=$(docker create "$image" sh 2>/dev/null) \
+    || die "Failed to create container from $image. Is the image pullable?"
+  docker cp "$cid:$container_path" "$dest" \
+    || { docker rm -f "$cid" >/dev/null 2>&1; die "Failed to copy $bin_name from $image"; }
+  docker rm -f "$cid" >/dev/null 2>&1
+  chmod +x "$dest"
+  ok "Extracted $bin_name -> $dest"
+}
+
+# macOS: download a GitHub release tarball and place one binary in .localnet/bin/.
+# bin_name   — name to save as (e.g. "op-reth" even if tarball contains "reth")
+# url        — tarball download URL
+# bin_in_tar — filename to search for inside the archive (default: bin_name)
+download_github_binary() {
+  local bin_name="$1"
+  local url="$2"
+  local bin_in_tar="${3:-$bin_name}"
+  local dest="$REPO_ROOT/.localnet/bin/$bin_name"
+
+  if [[ -x "$dest" ]]; then
+    ok "$bin_name already in .localnet/bin, skipping."; return
+  fi
+  if command -v "$bin_name" &>/dev/null; then
+    ok "$bin_name found in PATH ($(command -v "$bin_name")), skipping."; return
+  fi
+
+  info "Downloading $bin_name ..."
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  curl -fsSL "$url" -o "$tmpdir/archive.tar.gz" \
+    || { rm -rf "$tmpdir"; die "Failed to download $bin_name from $url"; }
+  tar xzf "$tmpdir/archive.tar.gz" -C "$tmpdir" \
+    || { rm -rf "$tmpdir"; die "Failed to extract archive for $bin_name"; }
+  local bin_path
+  bin_path=$(find "$tmpdir" -name "$bin_in_tar" -type f | head -1)
+  if [[ -z "$bin_path" ]]; then
+    rm -rf "$tmpdir"
+    die "Binary '$bin_in_tar' not found in archive from $url"
+  fi
+  cp "$bin_path" "$dest"
+  chmod +x "$dest"
+  rm -rf "$tmpdir"
+  ok "Downloaded $bin_name -> $dest"
+}
+
+# macOS: build op-node, op-batcher, op-proposer from the optimism monorepo.
+# These tools ship only as Linux Docker images; no pre-built macOS binaries exist.
+#
+# Clones are cached in .localnet/build/ and reused across clean runs so
+# the 5-minute clone+build only happens once per version.
+build_op_tools_macos() {
+  local dest_dir="$REPO_ROOT/.localnet/bin"
+  local build_dir="$REPO_ROOT/.localnet/build"
+  mkdir -p "$build_dir"
+
+  local node_ver batcher_ver proposer_ver
+  node_ver=$(read_image_tag op-node 1.16.2);         node_ver="${node_ver#v}"
+  batcher_ver=$(read_image_tag op-batcher 1.16.2);   batcher_ver="${batcher_ver#v}"
+  proposer_ver=$(read_image_tag op-proposer 1.10.0); proposer_ver="${proposer_ver#v}"
+
+  local need_node=false need_batcher=false need_proposer=false
+  [[ ! -x "$dest_dir/op-node"     ]] && ! command -v op-node     &>/dev/null && need_node=true
+  [[ ! -x "$dest_dir/op-batcher"  ]] && ! command -v op-batcher  &>/dev/null && need_batcher=true
+  [[ ! -x "$dest_dir/op-proposer" ]] && ! command -v op-proposer &>/dev/null && need_proposer=true
+
+  if ! $need_node && ! $need_batcher && ! $need_proposer; then
+    ok "op-node, op-batcher, op-proposer already present, skipping build."; return
+  fi
+
+  # op-node and op-batcher share the monorepo tag; clone once for both.
+  if $need_node || $need_batcher; then
+    local src_node="$build_dir/optimism-op-node-v${node_ver}"
+    if [[ ! -d "$src_node" ]]; then
+      warn "Cloning optimism@op-node/v${node_ver} into .localnet/build/ (first run — ~5 min)..."
+      git clone --depth=1 --branch "op-node/v${node_ver}" \
+        https://github.com/ethereum-optimism/optimism.git "$src_node" \
+        || { rm -rf "$src_node"; die "Failed to clone optimism at op-node/v${node_ver}"; }
+      ok "Cloned optimism source -> $src_node (cached for future runs)"
+    else
+      info "Using cached optimism source at $src_node"
+    fi
+
+    if $need_node; then
+      info "Building op-node..."
+      (cd "$src_node" && go build -o "$dest_dir/op-node" ./op-node/cmd) \
+        || die "Failed to build op-node"
+      chmod +x "$dest_dir/op-node"
+      ok "Built op-node -> $dest_dir/op-node"
+    fi
+    if $need_batcher; then
+      info "Building op-batcher..."
+      (cd "$src_node" && go build -o "$dest_dir/op-batcher" ./op-batcher/cmd) \
+        || die "Failed to build op-batcher"
+      chmod +x "$dest_dir/op-batcher"
+      ok "Built op-batcher -> $dest_dir/op-batcher"
+    fi
+  fi
+
+  # op-proposer may be at a different version tag.
+  if $need_proposer; then
+    local src_proposer="$build_dir/optimism-op-proposer-v${proposer_ver}"
+    if [[ ! -d "$src_proposer" ]]; then
+      warn "Cloning optimism@op-proposer/v${proposer_ver} into .localnet/build/ (first run — ~3 min)..."
+      git clone --depth=1 --branch "op-proposer/v${proposer_ver}" \
+        https://github.com/ethereum-optimism/optimism.git "$src_proposer" \
+        || { rm -rf "$src_proposer"; die "Failed to clone optimism at op-proposer/v${proposer_ver}"; }
+      ok "Cloned optimism source -> $src_proposer (cached for future runs)"
+    else
+      info "Using cached optimism source at $src_proposer"
+    fi
+
+    info "Building op-proposer..."
+    (cd "$src_proposer" && go build -o "$dest_dir/op-proposer" ./op-proposer/cmd) \
+      || die "Failed to build op-proposer"
+    chmod +x "$dest_dir/op-proposer"
+    ok "Built op-proposer -> $dest_dir/op-proposer"
+  fi
+}
+
+setup_binaries() {
+  mkdir -p "$REPO_ROOT/.localnet/bin"
+
+  local os_type arch
+  os_type=$(uname -s)
+  arch=$(uname -m)
+
+  if [[ "$os_type" == "Darwin" ]]; then
+    # Determine arch suffixes for GitHub release filenames.
+    local go_arch="amd64"
+    local reth_arch="x86_64-apple-darwin"
+    if [[ "$arch" == "arm64" ]]; then
+      go_arch="arm64"
+      reth_arch="aarch64-apple-darwin"
+    fi
+
+    local deployer_ver
+    deployer_ver=$(read_image_tag op-deployer 0.4.5)
+    deployer_ver="${deployer_ver#v}"
+
+    # op-reth v1.10.2 is the last version with a macOS release tarball.
+    # v1.11.x only ships as a Linux Docker image (no macOS binary).
+    # v1.10.2 is fully compatible with op-node v1.16.2 for sequencing.
+    local reth_ver="1.10.2"
+
+    download_github_binary "op-deployer" \
+      "https://github.com/ethereum-optimism/optimism/releases/download/op-deployer/v${deployer_ver}/op-deployer-${deployer_ver}-darwin-${go_arch}.tar.gz" \
+      "op-deployer"
+
+    download_github_binary "op-reth" \
+      "https://github.com/paradigmxyz/reth/releases/download/v${reth_ver}/op-reth-v${reth_ver}-${reth_arch}.tar.gz" \
+      "op-reth"
+
+    build_op_tools_macos
+  else
+    local registry="us-docker.pkg.dev/oplabs-tools-artifacts/images"
+    extract_binary "op-deployer" "$registry/op-deployer:$(read_image_tag op-deployer v0.4.5)"  "/usr/local/bin/op-deployer"
+    extract_binary "op-reth"     "$registry/op-reth:$(read_image_tag     op-reth     v1.11.5)" "/usr/local/bin/op-reth"
+    extract_binary "op-node"     "$registry/op-node:$(read_image_tag     op-node     v1.16.2)" "/usr/local/bin/op-node"
+    extract_binary "op-batcher"  "$registry/op-batcher:$(read_image_tag  op-batcher  v1.16.2)" "/usr/local/bin/op-batcher"
+    extract_binary "op-proposer" "$registry/op-proposer:$(read_image_tag op-proposer v1.10.0)" "/usr/local/bin/op-proposer"
+  fi
+}
+
 # ─── Build ─────────────────────────────────────────────────────────────────────
 build_binary() {
   info "Building localnet binary..."
@@ -277,19 +478,35 @@ build_binary() {
   ok "Binary built: cmd/localnet/bin/localnet"
 }
 
+# ─── Stop any running L2 processes (always safe to call) ──────────────────────
+stop_l2_procs() {
+  warn "Stopping any running L2 native processes..."
+  # SIGTERM first, then SIGKILL to guarantee MDBX lock release before new start.
+  pkill    -f op-proposer 2>/dev/null || true
+  pkill    -f op-batcher  2>/dev/null || true
+  pkill    -f op-node     2>/dev/null || true
+  pkill    -f op-reth     2>/dev/null || true
+  sleep 1
+  pkill -9 -f op-proposer 2>/dev/null || true
+  pkill -9 -f op-batcher  2>/dev/null || true
+  pkill -9 -f op-node     2>/dev/null || true
+  pkill -9 -f op-reth     2>/dev/null || true
+  sleep 1  # let the kernel release file locks after SIGKILL
+  ok "L2 processes stopped."
+}
+
 # ─── Clean (optional) ─────────────────────────────────────────────────────────
 clean_l2() {
-  warn "Cleaning L2 state (.localnet/state, .localnet/networks, Docker volumes)..."
-  rm -rf "$REPO_ROOT/.localnet/state" "$REPO_ROOT/.localnet/networks"
-  # Stop and remove L2 containers FIRST so volumes are no longer in use
-  docker ps -a --filter "label=stack=localnet-l2" --format "{{.Names}}" \
-    | xargs -r docker rm -f \
-    || true
-  docker volume ls --format "{{.Name}}" \
-    | grep -E "^localnet_" \
-    | xargs -r docker volume rm \
-    || true
-  ok "L2 state cleaned."
+  warn "Stopping any running L2 native processes..."
+  stop_l2_procs
+
+  warn "Cleaning L2 state (.localnet/state, .localnet/networks, .localnet/data, .localnet/logs)..."
+  rm -rf \
+    "$REPO_ROOT/.localnet/state" \
+    "$REPO_ROOT/.localnet/networks" \
+    "$REPO_ROOT/.localnet/data" \
+    "$REPO_ROOT/.localnet/logs"
+  ok "L2 state cleaned. (binaries in .localnet/bin/ and build cache in .localnet/build/ are preserved)"
 }
 
 # ─── L2 launch ────────────────────────────────────────────────────────────────
@@ -369,10 +586,12 @@ main() {
     clean_l2
   fi
 
+  setup_binaries
   generate_l1_chainconfig
   deploy_proxy
   fund_wallet
   build_binary
+  stop_l2_procs
   run_l2
   wait_for_l2
   print_summary

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 
 	"github.com/ethera-labs/local-testnet/configs"
@@ -67,15 +70,13 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2) (DeploymentS
 		return deploymentState, fmt.Errorf("failed to ensure state directory: %w", err)
 	}
 
-	o.logger.Info("instantiating Docker client")
-	dockerClient, err := docker.New()
+	opDeployerBin, err := resolveBinary(o.rootDir, "op-deployer")
 	if err != nil {
-		return deploymentState, fmt.Errorf("failed to create docker client: %w", err)
+		return deploymentState, fmt.Errorf("failed to locate op-deployer binary: %w", err)
 	}
-	defer dockerClient.Close()
 
 	o.logger.Info("instantiating Deployer")
-	opDeployer := deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, "kt-localnet", dockerClient)
+	opDeployer := deployer.NewDeployer(o.rootDir, o.stateDir, opDeployerBin)
 
 	o.logger.Info("initializing Deployer")
 	if err := opDeployer.Init(ctx, cfg.L1ChainID, cfg.ChainConfigs); err != nil {
@@ -173,6 +174,19 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2) (DeploymentS
 	}
 
 	return deploymentState, nil
+}
+
+// resolveBinary locates a named binary: first in .localnet/bin/, then in PATH.
+func resolveBinary(rootDir, name string) (string, error) {
+	localBin := filepath.Join(rootDir, ".localnet", "bin", name)
+	if _, err := os.Stat(localBin); err == nil {
+		return localBin, nil
+	}
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("%q not found in %s or PATH", name, filepath.Join(rootDir, ".localnet/bin"))
+	}
+	return path, nil
 }
 
 func resolveAltDAState(altDA configs.AltDAConfig, opState *deployer.OPDeploymentState) (configs.AltDAConfig, bool, error) {

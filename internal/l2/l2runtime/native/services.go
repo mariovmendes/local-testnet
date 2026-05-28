@@ -1,0 +1,312 @@
+package native
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/ethera-labs/local-testnet/configs"
+	"github.com/ethera-labs/local-testnet/internal/l2/infra/supervisor"
+	"github.com/ethereum/go-ethereum/crypto"
+)
+
+// Port layout per chain — native host ports, no Docker port mapping.
+const (
+	// Chain A
+	RethAHTTPPort    = 18545
+	RethAWSPort      = 18546
+	RethAAuthPort    = 18551
+	RethAP2PPort     = 30303
+	RethAMetrics     = 19898
+	NodeARPCPort     = 19545
+	BatcherARPCPort  = 18548
+	ProposerARPCPort = 18560
+
+	// Chain B
+	RethBHTTPPort    = 28545
+	RethBWSPort      = 28546
+	RethBAuthPort    = 28551
+	RethBP2PPort     = 30304 // different from A to avoid port conflict on the same host
+	RethBMetrics     = 29898
+	NodeBRPCPort     = 29545
+	BatcherBRPCPort  = 28548
+	ProposerBRPCPort = 28560
+)
+
+// Binaries holds resolved filesystem paths to all required native binaries.
+type Binaries struct {
+	OpReth     string
+	OpNode     string
+	OpBatcher  string
+	OpProposer string
+}
+
+// Builder constructs supervisor.ProcessSpec values for the core OP stack
+// services (op-reth, op-node, op-batcher, op-proposer) for both chains.
+type Builder struct {
+	cfg         configs.L2
+	bins        Binaries
+	networksDir string // .localnet/networks/
+	dataDir     string // .localnet/data/
+}
+
+// NewBuilder creates a Builder.
+func NewBuilder(cfg configs.L2, bins Binaries, networksDir, dataDir string) *Builder {
+	return &Builder{cfg: cfg, bins: bins, networksDir: networksDir, dataDir: dataDir}
+}
+
+// InitReth runs `op-reth init` for chain if its datadir is not yet
+// initialized (checked by the presence of db/database.version). Must be
+// called before starting the corresponding op-reth process.
+func (b *Builder) InitReth(ctx context.Context, chain configs.L2ChainName) error {
+	rethData := filepath.Join(b.dataDir, string(chain), "reth")
+	dbVersion := filepath.Join(rethData, "db", "database.version")
+	if _, err := os.Stat(dbVersion); err == nil {
+		return nil // already initialized
+	}
+	if err := os.MkdirAll(rethData, 0o755); err != nil {
+		return fmt.Errorf("mkdir reth datadir: %w", err)
+	}
+	genesisPath := filepath.Join(b.networksDir, string(chain), "genesis.json")
+	cmd := exec.CommandContext(ctx, b.bins.OpReth,
+		"init",
+		"--datadir", rethData,
+		"--chain", genesisPath,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("op-reth init for %s: %w", chain, err)
+	}
+	return nil
+}
+
+// RethSpecs returns ProcessSpecs for op-reth-a and op-reth-b.
+func (b *Builder) RethSpecs() ([]supervisor.ProcessSpec, error) {
+	chainAConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupA]
+	specA, err := b.rethSpec(
+		configs.L2ChainNameRollupA,
+		RethAHTTPPort, RethAWSPort, RethAAuthPort, RethAP2PPort, RethAMetrics,
+		b.cfg.Flashblocks.RollupAP2PSecretKeyHex,
+		chainAConfig.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	chainBConfig := b.cfg.ChainConfigs[configs.L2ChainNameRollupB]
+	specB, err := b.rethSpec(
+		configs.L2ChainNameRollupB,
+		RethBHTTPPort, RethBWSPort, RethBAuthPort, RethBP2PPort, RethBMetrics,
+		b.cfg.Flashblocks.RollupBP2PSecretKeyHex,
+		chainBConfig.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return []supervisor.ProcessSpec{specA, specB}, nil
+}
+
+// NodeBatcherProposerSpecs returns ProcessSpecs for op-node, op-batcher,
+// and op-proposer on both chains (6 processes total).
+func (b *Builder) NodeBatcherProposerSpecs() ([]supervisor.ProcessSpec, error) {
+	type chainLayout struct {
+		name     configs.L2ChainName
+		rethHTTP int
+		rethAuth int
+		nodeRPC  int
+		batchRPC int
+		propRPC  int
+	}
+
+	chains := []chainLayout{
+		{configs.L2ChainNameRollupA, RethAHTTPPort, RethAAuthPort, NodeARPCPort, BatcherARPCPort, ProposerARPCPort},
+		{configs.L2ChainNameRollupB, RethBHTTPPort, RethBAuthPort, NodeBRPCPort, BatcherBRPCPort, ProposerBRPCPort},
+	}
+
+	var specs []supervisor.ProcessSpec
+	for _, c := range chains {
+		nodeSpec := b.nodeSpec(c.name, c.rethAuth, c.nodeRPC)
+		batchSpec := b.batcherSpec(c.name, c.rethHTTP, c.nodeRPC, c.batchRPC)
+		propSpec, err := b.proposerSpec(c.name, c.nodeRPC, c.propRPC)
+		if err != nil {
+			return nil, fmt.Errorf("proposer spec for %s: %w", c.name, err)
+		}
+		specs = append(specs, nodeSpec, batchSpec, propSpec)
+	}
+	return specs, nil
+}
+
+// ---------------------------------------------------------------------------
+// internal spec builders
+// ---------------------------------------------------------------------------
+
+func (b *Builder) rethSpec(chain configs.L2ChainName, httpPort, wsPort, authPort, p2pPort, metricsPort int, p2pSecretHex string, chainID int) (supervisor.ProcessSpec, error) {
+	sk, err := normalizePeerKey(p2pSecretHex)
+	if err != nil {
+		return supervisor.ProcessSpec{}, fmt.Errorf("derive p2p key for %s: %w", chain, err)
+	}
+	configPath := filepath.Join(b.networksDir, string(chain))
+	dataDir := filepath.Join(b.dataDir, string(chain), "reth")
+	return supervisor.ProcessSpec{
+		Name:   "op-reth-" + chainSuffix(chain),
+		Binary: b.bins.OpReth,
+		Args: []string{
+			"node",
+			"--chain", filepath.Join(configPath, "genesis.json"),
+			"--datadir", dataDir,
+			"--http",
+			"--http.addr", "0.0.0.0",
+			"--http.port", fmt.Sprintf("%d", httpPort),
+			"--http.corsdomain", "*",
+			"--http.api", "web3,debug,eth,txpool,net,miner",
+			"--ws",
+			"--ws.addr", "0.0.0.0",
+			"--ws.port", fmt.Sprintf("%d", wsPort),
+			"--ws.origins", "*",
+			"--ws.api", "web3,debug,eth,txpool,net,miner",
+			"--authrpc.addr", "127.0.0.1",
+			"--authrpc.port", fmt.Sprintf("%d", authPort),
+			"--authrpc.jwtsecret", filepath.Join(configPath, "jwt.txt"),
+			"--disable-tx-gossip",
+			"--disable-discovery",
+			"--max-peers", "10",
+			"--port", fmt.Sprintf("%d", p2pPort),
+			"--p2p-secret-key-hex", sk,
+			"--nat", "none",
+			"--network-id", fmt.Sprintf("%d", chainID),
+			"--metrics", fmt.Sprintf("0.0.0.0:%d", metricsPort),
+			"--ipcpath", fmt.Sprintf("/tmp/reth-%s.ipc", chainSuffix(chain)),
+			"--rollup.compute-pending-block",
+		},
+	}, nil
+}
+
+func (b *Builder) nodeSpec(chain configs.L2ChainName, rethAuthPort, nodeRPCPort int) supervisor.ProcessSpec {
+	configPath := filepath.Join(b.networksDir, string(chain))
+	return supervisor.ProcessSpec{
+		Name:   "op-node-" + chainSuffix(chain),
+		Binary: b.bins.OpNode,
+		Env: map[string]string{
+			"OP_NODE_L1_ETH_RPC":             b.cfg.L1ElURL,
+			"OP_NODE_L1_BEACON":              b.cfg.L1ClURL,
+			"OP_NODE_L2_ENGINE_RPC":          fmt.Sprintf("http://127.0.0.1:%d", rethAuthPort),
+			"OP_NODE_L2_ENGINE_AUTH":         filepath.Join(configPath, "jwt.txt"),
+			"OP_NODE_L2_ENGINE_KIND":         "reth",
+			"OP_NODE_ROLLUP_CONFIG":          filepath.Join(configPath, "rollup.json"),
+			"OP_NODE_ROLLUP_L1_CHAIN_CONFIG": filepath.Join(configPath, "l1-chainconfig.json"),
+			"OP_NODE_P2P_DISABLE":            "true",
+			"OP_NODE_SEQUENCER_ENABLED":      "true",
+			"OP_NODE_SEQUENCER_L1_CONFS":     "0",
+			"OP_NODE_VERIFIER_L1_CONFS":      "0",
+			"OP_NODE_P2P_SEQUENCER_KEY":      b.cfg.CoordinatorPrivateKey,
+			"OP_NODE_RPC_ADDR":               "0.0.0.0",
+			"OP_NODE_RPC_PORT":               fmt.Sprintf("%d", nodeRPCPort),
+			"OP_NODE_RPC_ENABLE_ADMIN":       "true",
+			"OP_NODE_LOG_LEVEL":              "info",
+		},
+	}
+}
+
+func (b *Builder) batcherSpec(chain configs.L2ChainName, rethHTTPPort, nodeRPCPort, batcherRPCPort int) supervisor.ProcessSpec {
+	return supervisor.ProcessSpec{
+		Name:   "op-batcher-" + chainSuffix(chain),
+		Binary: b.bins.OpBatcher,
+		Env: map[string]string{
+			"OP_BATCHER_L1_ETH_RPC":           b.cfg.L1ElURL,
+			"OP_BATCHER_L2_ETH_RPC":           fmt.Sprintf("http://127.0.0.1:%d", rethHTTPPort),
+			"OP_BATCHER_ROLLUP_RPC":           fmt.Sprintf("http://127.0.0.1:%d", nodeRPCPort),
+			"OP_BATCHER_PRIVATE_KEY":          b.cfg.Wallet.PrivateKey,
+			"OP_BATCHER_POLL_INTERVAL":        "1s",
+			"OP_BATCHER_SUB_SAFETY_MARGIN":    "6",
+			"OP_BATCHER_NUM_CONFIRMATIONS":    "1",
+			"OP_BATCHER_MAX_CHANNEL_DURATION": "25",
+			"OP_BATCHER_RPC_ADDR":             "0.0.0.0",
+			"OP_BATCHER_RPC_PORT":             fmt.Sprintf("%d", batcherRPCPort),
+			"OP_BATCHER_RPC_ENABLE_ADMIN":     "true",
+		},
+	}
+}
+
+func (b *Builder) proposerSpec(chain configs.L2ChainName, nodeRPCPort, proposerRPCPort int) (supervisor.ProcessSpec, error) {
+	runtimeEnv, err := readEnvFile(filepath.Join(b.networksDir, string(chain), "runtime.env"))
+	if err != nil {
+		return supervisor.ProcessSpec{}, fmt.Errorf("read runtime.env for %s: %w", chain, err)
+	}
+
+	env := map[string]string{
+		"OP_PROPOSER_L1_ETH_RPC":        b.cfg.L1ElURL,
+		"OP_PROPOSER_ROLLUP_RPC":        fmt.Sprintf("http://127.0.0.1:%d", nodeRPCPort),
+		"OP_PROPOSER_PRIVATE_KEY":       b.cfg.Wallet.PrivateKey,
+		"OP_PROPOSER_POLL_INTERVAL":     "12s",
+		"OP_PROPOSER_PROPOSAL_INTERVAL": "10m",
+		"OP_PROPOSER_GAME_TYPE":         "1",
+		"OP_PROPOSER_RPC_PORT":          fmt.Sprintf("%d", proposerRPCPort),
+		"OP_PROPOSER_RPC_ADDR":          "0.0.0.0",
+		"OP_PROPOSER_RPC_ENABLE_ADMIN":  "true",
+	}
+	// Overlay runtime.env values (e.g. DISPUTE_GAME_FACTORY_ADDRESS,
+	// OP_PROPOSER_GAME_FACTORY_ADDRESS) on top of the defaults above.
+	for k, v := range runtimeEnv {
+		env[k] = v
+	}
+
+	return supervisor.ProcessSpec{
+		Name:   "op-proposer-" + chainSuffix(chain),
+		Binary: b.bins.OpProposer,
+		Env:    env,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+// readEnvFile parses a KEY=VALUE env file, ignoring blank lines and comments.
+func readEnvFile(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	result := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, _ := strings.Cut(line, "=")
+		result[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return result, scanner.Err()
+}
+
+// normalizePeerKey strips the optional 0x prefix and validates the key via
+// go-ethereum's ECDSA parser.
+func normalizePeerKey(hexKey string) (string, error) {
+	sk := strings.TrimPrefix(hexKey, "0x")
+	if _, err := crypto.HexToECDSA(sk); err != nil {
+		return "", fmt.Errorf("invalid p2p secret key: %w", err)
+	}
+	return sk, nil
+}
+
+// chainSuffix converts a chain name constant to the short letter used in
+// process names ("a" / "b").
+func chainSuffix(chain configs.L2ChainName) string {
+	switch chain {
+	case configs.L2ChainNameRollupA:
+		return "a"
+	case configs.L2ChainNameRollupB:
+		return "b"
+	default:
+		return string(chain)
+	}
+}

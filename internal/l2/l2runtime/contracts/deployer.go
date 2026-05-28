@@ -77,6 +77,20 @@ func (d *Deployer) deployContracts(ctx context.Context, chainConfigs map[configs
 
 	deployments := make(map[configs.L2ChainName]map[ContractName]common.Address)
 	for chainName, chainConfig := range chainConfigs {
+		directory := filepath.Join(d.networksDir, string(chainName))
+		contractsPath := filepath.Join(directory, contractsFileName)
+
+		// If contracts.json already exists with valid (non-zero) addresses, skip
+		// re-deployment. This makes the non-clean redeploy path idempotent: the
+		// coordinator nonce differs per chain after the first deploy, so a second
+		// deploy would land contracts at different addresses and fail the cross-chain
+		// address-match check.
+		if existing, err := loadContractJSON(contractsPath); err == nil && len(existing) > 0 {
+			d.logger.With("chain_name", chainName).Info("contracts.json already present with valid addresses, skipping deployment")
+			deployments[chainName] = existing
+			continue
+		}
+
 		// When running in Docker, use host.docker.internal to access host services
 		// Otherwise use localhost for native execution
 		hostname := "localhost"
@@ -122,22 +136,19 @@ func (d *Deployer) deployContracts(ctx context.Context, chainConfigs map[configs
 			addressMap[contractName] = common.HexToAddress(addrStr)
 		}
 		deployments[chainName] = addressMap
+
+		// Persist immediately so a partial failure on the second chain can be recovered.
+		addrStrs := make(map[ContractName]string)
+		for contractName, addr := range addressMap {
+			addrStrs[contractName] = addr.Hex()
+		}
+		if err := writeContractJSON(contractsPath, addrStrs, uint64(chainConfig.ID)); err != nil {
+			return nil, fmt.Errorf("failed to write %s for %s: %w", contractsFileName, chainName, err)
+		}
 	}
 
 	if !addressesMatchAcrossChains(deployments) {
 		return nil, fmt.Errorf("contract addresses differ between rollups")
-	}
-
-	for chainName, addresses := range deployments {
-		addressStrings := make(map[ContractName]string)
-		for contractName, addr := range addresses {
-			addressStrings[contractName] = addr.Hex()
-		}
-
-		directory := filepath.Join(d.networksDir, string(chainName))
-		if err := writeContractJSON(filepath.Join(directory, contractsFileName), addressStrings, uint64(chainConfigs[chainName].ID)); err != nil {
-			return nil, fmt.Errorf("failed to write %s for %s: %w", contractsFileName, chainName, err)
-		}
 	}
 
 	d.logger.Info("contracts deployed successfully")
@@ -420,6 +431,34 @@ func (d *Deployer) deployContract(ctx context.Context, client *ethclient.Client,
 	}
 
 	return address, nil
+}
+
+// loadContractJSON reads an existing contracts.json and returns only entries
+// whose addresses are non-zero. Returns an error (or empty map) if the file
+// doesn't exist or has no valid addresses, signalling that deployment is needed.
+func loadContractJSON(path string) (map[ContractName]common.Address, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Addresses map[ContractName]string `json:"addresses"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	result := make(map[ContractName]common.Address)
+	for name, hexAddr := range payload.Addresses {
+		addr := common.HexToAddress(hexAddr)
+		if addr == (common.Address{}) {
+			continue // skip zero addresses
+		}
+		result[name] = addr
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no valid addresses in %s", path)
+	}
+	return result, nil
 }
 
 func writeContractJSON(path string, addresses map[ContractName]string, chainID uint64) error {

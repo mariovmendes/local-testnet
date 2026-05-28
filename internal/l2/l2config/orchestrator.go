@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/ethera-labs/local-testnet/configs"
-	"github.com/ethera-labs/local-testnet/internal/l2/infra/docker"
 	"github.com/ethera-labs/local-testnet/internal/l2/infra/filesystem/json"
 	"github.com/ethera-labs/local-testnet/internal/l2/l1deployment"
 	"github.com/ethera-labs/local-testnet/internal/l2/l1deployment/deployer"
@@ -53,17 +54,20 @@ func NewOrchestrator(rootDir, localnetDir, stateDir, networksDir, servicesDir st
 func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, deploymentState l1deployment.DeploymentState) error {
 	o.logger.Info("Phase 2: Starting L2 configuration generation")
 
-	dockerClient, err := docker.New()
+	opDeployerBin, err := resolveBinaryL2Config(o.rootDir, "op-deployer")
 	if err != nil {
-		return fmt.Errorf("failed to create docker client: %w", err)
+		return fmt.Errorf("failed to locate op-deployer binary: %w", err)
 	}
-	defer dockerClient.Close()
+	opRethBin, err := resolveBinaryL2Config(o.rootDir, "op-reth")
+	if err != nil {
+		return fmt.Errorf("failed to locate op-reth binary: %w", err)
+	}
 
 	var (
 		writer = json.NewWriter()
 
-		opDeployer    = deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, "kt-localnet", dockerClient)
-		genesisGen    = genesis.NewGenerator(opDeployer, dockerClient, writer, o.localnetDir, cfg.ImageRef(configs.ImageNameOpReth))
+		opDeployer    = deployer.NewDeployer(o.rootDir, o.stateDir, opDeployerBin)
+		genesisGen    = genesis.NewGenerator(opDeployer, writer, o.localnetDir, opRethBin)
 		rollupGen     = rollup.NewGenerator(json.NewReader(), opDeployer, writer, o.localnetDir)
 		secretsGen    = secrets.NewGenerator(writer)
 		contractsGen  = contracts.NewGenerator(writer)
@@ -138,4 +142,17 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, deploymentSt
 	o.logger.Info("Phase 2: L2 configuration generation completed successfully")
 
 	return nil
+}
+
+// resolveBinaryL2Config locates a named binary: first in .localnet/bin/, then in PATH.
+func resolveBinaryL2Config(rootDir, name string) (string, error) {
+	localBin := filepath.Join(rootDir, ".localnet", "bin", name)
+	if _, err := os.Stat(localBin); err == nil {
+		return localBin, nil
+	}
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("%q not found in %s or PATH", name, filepath.Join(rootDir, ".localnet/bin"))
+	}
+	return p, nil
 }
