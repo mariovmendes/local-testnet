@@ -12,12 +12,12 @@ import {
   CHAIN_B_PRIVATE_KEY,
   CHAIN_B_RPC,
   CHAIN_B_TOKEN_ADDRESS,
-  CHAIN_A_BLOCKSCOUT,
-  CHAIN_B_BLOCKSCOUT,
+  CHAIN_A_EXPLORER,
+  CHAIN_B_EXPLORER,
   CET_FACTORY_ADDRESS,
 } from '../config/chains'
 
-export { CHAIN_A_ID, CHAIN_B_ID, CHAIN_A_BLOCKSCOUT, CHAIN_B_BLOCKSCOUT }
+export { CHAIN_A_ID, CHAIN_B_ID, CHAIN_A_EXPLORER, CHAIN_B_EXPLORER }
 
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',

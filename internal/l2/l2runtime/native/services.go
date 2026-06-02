@@ -68,6 +68,10 @@ const (
 	// Sidecar (cross-chain coordination layer, one per chain)
 	SidecarAAPIPort = 17090
 	SidecarBAPIPort = 27090
+
+	// Otterscan (native EVM block explorer, one instance per chain)
+	OtterscanAPort = 5100
+	OtterscanBPort = 5200
 )
 
 // Binaries holds resolved filesystem paths to all required native binaries.
@@ -348,6 +352,29 @@ func (b *Builder) SidecarSpecs(mailboxA, mailboxB string) []supervisor.ProcessSp
 	return []supervisor.ProcessSpec{specA, specB}
 }
 
+// OtterscanSpecs returns ProcessSpecs for the two Expedition block explorer instances.
+// Expedition works with standard eth_* JSON-RPC (unlike Otterscan which requires erigon_*).
+// expeditionDir is the absolute path to the cloned + built Expedition source.
+// The static build under expeditionDir/build/ is served via `npx serve` — this avoids
+// the slow webpack dev-server startup and Node 17+ OpenSSL incompatibilities.
+func (b *Builder) OtterscanSpecs(expeditionDir string) []supervisor.ProcessSpec {
+	buildDir := filepath.Join(expeditionDir, "build")
+	specA := supervisor.ProcessSpec{
+		Name:   "explorer-a",
+		Binary: b.bins.NPM,
+		// `npx serve -s <dir> -p <port>` serves the CRA static build in SPA mode.
+		Args: []string{"exec", "serve", "--", "-s", buildDir, "-p", fmt.Sprintf("%d", OtterscanAPort)},
+		Dir:  expeditionDir,
+	}
+	specB := supervisor.ProcessSpec{
+		Name:   "explorer-b",
+		Binary: b.bins.NPM,
+		Args:   []string{"exec", "serve", "--", "-s", buildDir, "-p", fmt.Sprintf("%d", OtterscanBPort)},
+		Dir:    expeditionDir,
+	}
+	return []supervisor.ProcessSpec{specA, specB}
+}
+
 // FrontendSpec returns the ProcessSpec for the Ethera Labs Console (Vite dev server).
 // frontendDir is the absolute path to the frontend/ source directory.
 // deployedContracts maps contract names to their hex addresses.
@@ -383,6 +410,8 @@ func (b *Builder) FrontendSpec(frontendDir string, deployedContracts map[string]
 		"VITE_SIMPLE_ACCOUNT_FACTORY_B":       deployedContracts["simpleAccountFactory"],
 		"VITE_BUNDLER_A_URL":                  fmt.Sprintf("http://localhost:%d", 17082),
 		"VITE_BUNDLER_B_URL":                  fmt.Sprintf("http://localhost:%d", 27082),
+		"VITE_CHAIN_A_EXPLORER_URL":           fmt.Sprintf("http://localhost:%d", OtterscanAPort),
+		"VITE_CHAIN_B_EXPLORER_URL":           fmt.Sprintf("http://localhost:%d", OtterscanBPort),
 	}
 	return supervisor.ProcessSpec{
 		Name:   "frontend",

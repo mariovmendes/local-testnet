@@ -140,7 +140,15 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	}
 
 	// ------------------------------------------------------------------
-	// 9. Start the Ethera Labs Console (Vite dev server) when enabled.
+	// 9. Start Otterscan block explorers (one per chain, no Docker needed).
+	//    Only attempts to start if the source dir exists in .localnet/build/.
+	// ------------------------------------------------------------------
+	if err := o.startOtterscan(ctx, cfg, manager); err != nil {
+		return nil, fmt.Errorf("failed to start otterscan: %w", err)
+	}
+
+	// ------------------------------------------------------------------
+	// 10. Start the Ethera Labs Console (Vite dev server) when enabled.
 	// ------------------------------------------------------------------
 	if cfg.Frontend.Enabled || cfg.Frontend.DevEnabled {
 		if err := o.startFrontend(ctx, cfg, manager, deployedContracts); err != nil {
@@ -149,7 +157,7 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	}
 
 	// ------------------------------------------------------------------
-	// 10. Supervise: log if any process dies unexpectedly
+	// 11. Supervise: log if any process dies unexpectedly
 	// ------------------------------------------------------------------
 	go func() {
 		if err := sup.Wait(ctx); err != nil {
@@ -206,6 +214,31 @@ func (o *Orchestrator) startSidecarStack(
 	if err := manager.WaitSidecarsReady(ctx); err != nil {
 		return fmt.Errorf("sidecar readiness: %w", err)
 	}
+	return nil
+}
+
+// startOtterscan starts two Otterscan explorer instances (one per chain).
+// otterscanDir is the Otterscan source tree with node_modules installed.
+func (o *Orchestrator) startOtterscan(ctx context.Context, cfg configs.L2, manager *services.NativeManager) error {
+	otterscanDir := filepath.Join(o.rootDir, ".localnet", "build", "expedition")
+	if _, err := os.Stat(otterscanDir); err != nil {
+		o.logger.Info("expedition source not found, skipping explorer", "dir", otterscanDir)
+		return nil
+	}
+
+	bins, err := o.resolveBinaries(cfg.Flashblocks.Enabled)
+	if err != nil {
+		return fmt.Errorf("resolve binaries for otterscan: %w", err)
+	}
+	dataDir := filepath.Join(o.localnetDir, "data")
+	builder := native.NewBuilder(cfg, bins, o.networksDir, dataDir)
+	specs := builder.OtterscanSpecs(otterscanDir)
+	if err := manager.StartOtterscan(ctx, specs); err != nil {
+		return fmt.Errorf("start otterscan: %w", err)
+	}
+	o.logger.Info("Otterscan explorers started",
+		"chain-a", fmt.Sprintf("http://localhost:%d", native.OtterscanAPort),
+		"chain-b", fmt.Sprintf("http://localhost:%d", native.OtterscanBPort))
 	return nil
 }
 

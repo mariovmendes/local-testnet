@@ -436,11 +436,27 @@ build_sidecar_binaries() {
   # ── publisher ──────────────────────────────────────────────────────────────
   local pub_src="$services_dir/publisher"
   if [[ ! -x "$dest_dir/publisher" ]]; then
+    # Clone if not present yet — on first run the Go binary hasn't cloned it.
     if [[ ! -d "$pub_src" ]]; then
-      die "publisher source not found at $pub_src (run make deploy once with sidecar disabled first to clone repos)"
+      local pub_url pub_branch
+      pub_url=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('repositories',{}).get('publisher',{}).get('url','git@github.com:ethera-labs/publisher.git'))
+" 2>/dev/null || echo "git@github.com:ethera-labs/publisher.git")
+      pub_branch=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('repositories',{}).get('publisher',{}).get('branch','main'))
+" 2>/dev/null || echo "main")
+      warn "Cloning publisher@${pub_branch} ..."
+      mkdir -p "$services_dir"
+      git clone --depth=1 --branch "$pub_branch" "$pub_url" "$pub_src" \
+        || die "Failed to clone publisher from $pub_url"
+      ok "Cloned publisher"
     fi
     warn "Building publisher from source (~5-10 min, cached after first build) ..."
-    (cd "$pub_src" && cargo build --locked --release --bin publisher 2>&1) \
+    (cd "$pub_src" && rustup run 1.91 cargo build --locked --release --bin publisher 2>&1) \
       || die "Failed to build publisher"
     cp "$pub_src/target/release/publisher" "$dest_dir/publisher"
     chmod +x "$dest_dir/publisher"
@@ -452,8 +468,24 @@ build_sidecar_binaries() {
   # ── sidecar ────────────────────────────────────────────────────────────────
   local sc_src="$services_dir/sidecar"
   if [[ ! -x "$dest_dir/sidecar" ]]; then
+    # Clone if not present yet.
     if [[ ! -d "$sc_src" ]]; then
-      die "sidecar source not found at $sc_src"
+      local sc_url sc_branch
+      sc_url=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('repositories',{}).get('sidecar',{}).get('url','git@github.com:ethera-labs/sidecar.git'))
+" 2>/dev/null || echo "git@github.com:ethera-labs/sidecar.git")
+      sc_branch=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG_FILE'))
+print(cfg.get('l2',{}).get('repositories',{}).get('sidecar',{}).get('branch','main'))
+" 2>/dev/null || echo "main")
+      warn "Cloning sidecar@${sc_branch} ..."
+      mkdir -p "$services_dir"
+      git clone --depth=1 --branch "$sc_branch" "$sc_url" "$sc_src" \
+        || die "Failed to clone sidecar from $sc_url"
+      ok "Cloned sidecar"
     fi
     warn "Building sidecar from source (~5-10 min, cached after first build) ..."
     (cd "$sc_src" && cargo build --locked --release --bin sidecar 2>&1) \
@@ -534,6 +566,43 @@ print(cfg.get('l2',{}).get('repositories',{}).get('op-rbuilder',{}).get('branch'
   fi
 }
 
+# Clone and npm-install Expedition (lightweight EVM block explorer).
+# Works with standard eth_* JSON-RPC — no Erigon-specific methods required.
+# Cached in .localnet/build/expedition/ — only cloned/installed once.
+build_otterscan() {
+  local dest="$REPO_ROOT/.localnet/build/expedition"
+
+  if [[ -d "$dest/node_modules" ]]; then
+    ok "Expedition (block explorer) already installed, skipping."
+    return
+  fi
+
+  if [[ ! -d "$dest" ]]; then
+    warn "Cloning Expedition block explorer ..."
+    git clone --depth=1 \
+      https://github.com/xops/expedition.git "$dest" \
+      || die "Failed to clone Expedition"
+    ok "Cloned Expedition -> $dest"
+  else
+    info "Using cached Expedition source at $dest"
+  fi
+
+  warn "Installing Expedition npm dependencies ..."
+  (cd "$dest" && npm install 2>&1) \
+    || die "Failed to install Expedition dependencies"
+
+  if [[ ! -d "$dest/build" ]]; then
+    warn "Building Expedition static files (one-time, ~2 min) ..."
+    # NODE_OPTIONS is required because Expedition's webpack uses OpenSSL APIs
+    # that changed in Node 17+. --openssl-legacy-provider restores compatibility.
+    (cd "$dest" && NODE_OPTIONS=--openssl-legacy-provider npm run build 2>&1) \
+      || die "Failed to build Expedition"
+  else
+    info "Using cached Expedition build at $dest/build"
+  fi
+  ok "Expedition ready at $dest"
+}
+
 setup_binaries() {
   mkdir -p "$REPO_ROOT/.localnet/bin"
 
@@ -576,6 +645,9 @@ setup_binaries() {
     extract_binary "op-batcher"  "$registry/op-batcher:$(read_image_tag  op-batcher  v1.16.2)" "/usr/local/bin/op-batcher"
     extract_binary "op-proposer" "$registry/op-proposer:$(read_image_tag op-proposer v1.10.0)" "/usr/local/bin/op-proposer"
   fi
+
+  # Expedition block explorer (works with standard eth_* RPC, no Erigon needed).
+  build_otterscan
 
   # Build Sidecar binaries (publisher + sidecar) from Rust source when sidecar enabled.
   local sidecar_enabled
@@ -637,8 +709,8 @@ stop_l2_procs() {
   pkill -9 -f "${bin}/publisher"    2>/dev/null || true
   sleep 1  # let the kernel release file locks after SIGKILL
 
-  # Frontend: kill by port rather than by name so unrelated npm/vite processes
-  # are never touched. Reads the configured port (default 3000).
+  # Frontend and explorers: kill by port rather than by name so unrelated
+  # npm/vite processes are never touched.
   local frontend_port
   frontend_port=$(python3 -c "
 import yaml
@@ -646,6 +718,9 @@ cfg = yaml.safe_load(open('$CONFIG_FILE'))
 print(cfg.get('l2',{}).get('frontend',{}).get('port', 3000))
 " 2>/dev/null || echo "3000")
   lsof -ti ":${frontend_port}" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+  # Otterscan ports
+  lsof -ti ":5100" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+  lsof -ti ":5200" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 
   # Also stop any lingering Flashblocks Docker containers that may have been
   # left by an earlier Docker-based deployment.
@@ -718,6 +793,12 @@ print_summary() {
   echo "    Sidecar API:      http://127.0.0.1:27090"
   echo ""
   echo "  Publisher:          http://127.0.0.1:18080"
+  echo ""
+  echo "  Block explorer (Expedition — standard eth RPC)"
+  echo "    Chain A (77777):  http://127.0.0.1:5100"
+  echo "    Chain B (88888):  http://127.0.0.1:5200"
+  echo ""
+  echo "  Ethera Labs Console: http://127.0.0.1:3000"
   echo ""
   echo "  Useful commands:"
   echo "    make show-l2       # list running containers"

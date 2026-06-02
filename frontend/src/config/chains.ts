@@ -48,8 +48,13 @@ export const SIDECAR_B_URL = requireEnv('VITE_SIDECAR_B_URL')
 export const HEALTH_API_URL =
   env.VITE_HEALTH_API_URL?.trim() || 'http://localhost:8090'
 
-export const CHAIN_A_BLOCKSCOUT = env.VITE_CHAIN_A_BLOCKSCOUT_URL?.trim() || 'http://localhost:19000'
-export const CHAIN_B_BLOCKSCOUT = env.VITE_CHAIN_B_BLOCKSCOUT_URL?.trim() || 'http://localhost:29000'
+// Otterscan explorer URLs (replaces Blockscout; same URL scheme: /tx/, /address/, /block/)
+export const CHAIN_A_EXPLORER = env.VITE_CHAIN_A_EXPLORER_URL?.trim() || 'http://localhost:5100'
+export const CHAIN_B_EXPLORER = env.VITE_CHAIN_B_EXPLORER_URL?.trim() || 'http://localhost:5200'
+
+// Legacy alias kept for any remaining references
+export const CHAIN_A_BLOCKSCOUT = CHAIN_A_EXPLORER
+export const CHAIN_B_BLOCKSCOUT = CHAIN_B_EXPLORER
 
 export const CHAIN_A_BRIDGE_ADDRESS = env.VITE_CHAIN_A_BRIDGE_ADDRESS || ''
 export const CHAIN_B_BRIDGE_ADDRESS = env.VITE_CHAIN_B_BRIDGE_ADDRESS || ''

@@ -273,6 +273,12 @@ func (m *NativeManager) WaitSidecarsReady(ctx context.Context) error {
 	}
 }
 
+// StartOtterscan starts the two Otterscan explorer instances (one per chain).
+func (m *NativeManager) StartOtterscan(ctx context.Context, specs []supervisor.ProcessSpec) error {
+	m.logger.Info("starting Otterscan explorer instances", "count", len(specs))
+	return m.sup.Start(ctx, specs)
+}
+
 // StartFrontend starts the Ethera Labs Console (Vite dev server).
 func (m *NativeManager) StartFrontend(ctx context.Context, spec supervisor.ProcessSpec) error {
 	m.logger.Info("starting frontend dev server", "dir", spec.Dir)

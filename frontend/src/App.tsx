@@ -7,7 +7,7 @@ import TransactionPanel, {
   type TransactionPanelMode,
 } from './components/transactions/TransactionPanel'
 import { statusOf, useTransactionStore } from './stores/transactionStore'
-import { CHAIN_A_ID, CHAIN_A_BLOCKSCOUT, CHAIN_B_BLOCKSCOUT, getProvider } from './api/rollup'
+import { CHAIN_A_ID, CHAIN_A_EXPLORER, CHAIN_B_EXPLORER, getProvider } from './api/rollup'
 import { fetchServices, indexById, type ServiceStatus } from './api/health'
 import { BUNDLER_TEST_AVAILABLE, FLASHBLOCKS_ENABLED } from './config/chains'
 
@@ -130,10 +130,16 @@ function App() {
     return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
   }
 
-  const getBlockscoutUrl = (chainId: number, txHash: string) => {
-    const baseUrl = chainId === CHAIN_A_ID ? CHAIN_A_BLOCKSCOUT : CHAIN_B_BLOCKSCOUT
-    return `${baseUrl}/tx/${txHash}`
-  }
+  // Explorer helpers — point to Otterscan (same URL scheme as Blockscout)
+  const explorerBase = (chainId: number) =>
+    chainId === CHAIN_A_ID ? CHAIN_A_EXPLORER : CHAIN_B_EXPLORER
+
+  const explorerTxUrl     = (chainId: number, hash: string)    => `${explorerBase(chainId)}/tx/${hash}`
+  const explorerAddrUrl   = (chainId: number, address: string) => `${explorerBase(chainId)}/address/${address}`
+  const explorerBlockUrl  = (chainId: number, block: number)   => `${explorerBase(chainId)}/block/${block}`
+
+  // Legacy alias kept for any existing call-sites
+  const getBlockscoutUrl = (chainId: number, txHash: string) => explorerTxUrl(chainId, txHash)
 
   const statusColor = (status: string) => {
     if (status === 'committed') return 'text-cyan'
@@ -383,13 +389,13 @@ function App() {
                       </div>
                       <div className="flex items-center gap-1.5">
                         <a
-                          href={getBlockscoutUrl(tx.chainId, tx.instanceId)}
+                          href={explorerTxUrl(tx.chainId, tx.instanceId)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="font-mono text-[11px] text-text-secondary hover:text-amber transition-colors"
-                          title={tx.instanceId}
+                          title={`View in Otterscan: ${tx.instanceId}`}
                         >
-                          {tx.instanceId.slice(0, 12)}…{tx.instanceId.slice(-6)}
+                          {tx.instanceId.slice(0, 12)}…{tx.instanceId.slice(-6)} ↗
                         </a>
                         <button
                           onClick={() => handleCopyId(tx.instanceId)}
