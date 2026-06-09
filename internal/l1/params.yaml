@@ -44,4 +44,4 @@ images:
   monitor: "ssvlabs/ethereum2-monitor:v1.0.102"
   redis: "redis:7.4.2"
   postgres: "postgres:15"
-  foundry: "localssv/ssv-network"
+  deployer: "localssv/ssv-network"
