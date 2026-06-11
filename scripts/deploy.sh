@@ -353,6 +353,80 @@ download_github_binary() {
   ok "Downloaded $bin_name -> $dest"
 }
 
+# ─── Helper: Resolve repository path ──────────────────────────────────────────
+# Resolves a repository to either a local path or a clone path.
+# If local-path is set in config.yaml, uses that (resolved relative to REPO_ROOT).
+# If local-path is not set but url is set, clones to services_dir and uses that.
+# Returns the resolved path and sets up the repo if needed.
+resolve_repo_path() {
+  local repo_name="$1"          # e.g., "publisher", "sidecar", "op-rbuilder"
+  local services_dir="$2"       # e.g., .localnet/services
+  local config_file="$3"        # config.yaml path
+
+  local local_path url branch dest_path
+  
+  # Read local-path from config
+  local_path=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$config_file'))
+print(cfg.get('l2',{}).get('repositories',{}).get('$repo_name',{}).get('local-path',''))
+" 2>/dev/null || echo "")
+  
+  # If local-path is set, use it (resolve relative to REPO_ROOT)
+  if [[ -n "$local_path" ]]; then
+    # Handle ~/ expansion
+    if [[ "$local_path" == ~/* ]]; then
+      local_path="${local_path/#\~/$HOME}"
+    fi
+    
+    # Handle absolute vs relative paths
+    if [[ "$local_path" = /* ]]; then
+      dest_path="$local_path"
+    else
+      dest_path="$(cd "$REPO_ROOT" && cd "$local_path" 2>/dev/null && pwd)" \
+        || die "Failed to resolve local-path for $repo_name: $local_path"
+    fi
+    
+    [[ -d "$dest_path" ]] || die "Local path for $repo_name not found: $dest_path"
+    info "Using local path for $repo_name: $dest_path" >&2
+    echo "$dest_path"
+    return 0
+  fi
+  
+  # No local-path; read url and branch for cloning
+  url=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$config_file'))
+print(cfg.get('l2',{}).get('repositories',{}).get('$repo_name',{}).get('url',''))
+" 2>/dev/null || echo "")
+  
+  branch=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$config_file'))
+print(cfg.get('l2',{}).get('repositories',{}).get('$repo_name',{}).get('branch',''))
+" 2>/dev/null || echo "")
+  
+  if [[ -z "$url" ]]; then
+    die "Repository $repo_name has neither local-path nor url set in config.yaml"
+  fi
+  
+  # Default branch if not specified
+  [[ -z "$branch" ]] && branch="main"
+  
+  dest_path="$services_dir/$repo_name"
+  
+  # Clone if not already present
+  if [[ ! -d "$dest_path" ]]; then
+    warn "Cloning $repo_name@${branch} ..." >&2
+    mkdir -p "$services_dir"
+    git clone --depth=1 --branch "$branch" "$url" "$dest_path" \
+      || die "Failed to clone $repo_name from $url"
+    ok "Cloned $repo_name" >&2
+  fi
+  
+  echo "$dest_path"
+}
+
 # macOS: build op-node, op-batcher, op-proposer from the optimism monorepo.
 # These tools ship only as Linux Docker images; no pre-built macOS binaries exist.
 #
@@ -428,33 +502,17 @@ build_op_tools_macos() {
 }
 
 # Build publisher and sidecar from Rust source when Sidecar is enabled.
-# Both are in already-cloned repos under .localnet/services/.
+# Both can be local checkouts (via local-path in config) or cloned repos.
 build_sidecar_binaries() {
   local dest_dir="$REPO_ROOT/.localnet/bin"
   local services_dir="$REPO_ROOT/.localnet/services"
 
   # ── publisher ──────────────────────────────────────────────────────────────
-  local pub_src="$services_dir/publisher"
+  local pub_src
   if [[ ! -x "$dest_dir/publisher" ]]; then
-    # Clone if not present yet — on first run the Go binary hasn't cloned it.
-    if [[ ! -d "$pub_src" ]]; then
-      local pub_url pub_branch
-      pub_url=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG_FILE'))
-print(cfg.get('l2',{}).get('repositories',{}).get('publisher',{}).get('url','git@github.com:ethera-labs/publisher.git'))
-" 2>/dev/null || echo "git@github.com:ethera-labs/publisher.git")
-      pub_branch=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG_FILE'))
-print(cfg.get('l2',{}).get('repositories',{}).get('publisher',{}).get('branch','main'))
-" 2>/dev/null || echo "main")
-      warn "Cloning publisher@${pub_branch} ..."
-      mkdir -p "$services_dir"
-      git clone --depth=1 --branch "$pub_branch" "$pub_url" "$pub_src" \
-        || die "Failed to clone publisher from $pub_url"
-      ok "Cloned publisher"
-    fi
+    pub_src=$(resolve_repo_path "publisher" "$services_dir" "$CONFIG_FILE") \
+      || die "Failed to resolve publisher repository path"
+    
     warn "Building publisher from source (~5-10 min, cached after first build) ..."
     (cd "$pub_src" && rustup run 1.91 cargo build --locked --release --bin publisher 2>&1) \
       || die "Failed to build publisher"
@@ -466,27 +524,11 @@ print(cfg.get('l2',{}).get('repositories',{}).get('publisher',{}).get('branch','
   fi
 
   # ── sidecar ────────────────────────────────────────────────────────────────
-  local sc_src="$services_dir/sidecar"
+  local sc_src
   if [[ ! -x "$dest_dir/sidecar" ]]; then
-    # Clone if not present yet.
-    if [[ ! -d "$sc_src" ]]; then
-      local sc_url sc_branch
-      sc_url=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG_FILE'))
-print(cfg.get('l2',{}).get('repositories',{}).get('sidecar',{}).get('url','git@github.com:ethera-labs/sidecar.git'))
-" 2>/dev/null || echo "git@github.com:ethera-labs/sidecar.git")
-      sc_branch=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG_FILE'))
-print(cfg.get('l2',{}).get('repositories',{}).get('sidecar',{}).get('branch','main'))
-" 2>/dev/null || echo "main")
-      warn "Cloning sidecar@${sc_branch} ..."
-      mkdir -p "$services_dir"
-      git clone --depth=1 --branch "$sc_branch" "$sc_url" "$sc_src" \
-        || die "Failed to clone sidecar from $sc_url"
-      ok "Cloned sidecar"
-    fi
+    sc_src=$(resolve_repo_path "sidecar" "$services_dir" "$CONFIG_FILE") \
+      || die "Failed to resolve sidecar repository path"
+    
     warn "Building sidecar from source (~5-10 min, cached after first build) ..."
     (cd "$sc_src" && cargo build --locked --release --bin sidecar 2>&1) \
       || die "Failed to build sidecar"
@@ -501,6 +543,7 @@ print(cfg.get('l2',{}).get('repositories',{}).get('sidecar',{}).get('branch','ma
 # Build op-rbuilder and rollup-boost from Rust source when Flashblocks is enabled.
 # Both are Rust projects; cargo build is used on all platforms.
 # Builds are cached: binaries are only rebuilt when not already in .localnet/bin/.
+# op-rbuilder can be a local checkout (via local-path in config) or a cloned repo.
 build_flashblocks_binaries() {
   local dest_dir="$REPO_ROOT/.localnet/bin"
   local build_dir="$REPO_ROOT/.localnet/build"
@@ -508,28 +551,11 @@ build_flashblocks_binaries() {
   mkdir -p "$build_dir"
 
   # ── op-rbuilder ──────────────────────────────────────────────────────────
-  # Source is already cloned to .localnet/services/op-rbuilder by the localnet
-  # binary (service.go clones it when flashblocks.enabled=true). If not present
-  # yet (first deploy before service.go has run), clone it here.
-  local rbuilder_src="$services_dir/op-rbuilder"
+  local rbuilder_src
   if [[ ! -x "$dest_dir/op-rbuilder" ]]; then
-    if [[ ! -d "$rbuilder_src" ]]; then
-      local rbuilder_url rbuilder_branch
-      rbuilder_url=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG_FILE'))
-print(cfg.get('l2',{}).get('repositories',{}).get('op-rbuilder',{}).get('url','git@github.com:ethera-labs/op-rbuilder.git'))
-" 2>/dev/null || echo "git@github.com:ethera-labs/op-rbuilder.git")
-      rbuilder_branch=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG_FILE'))
-print(cfg.get('l2',{}).get('repositories',{}).get('op-rbuilder',{}).get('branch','stage'))
-" 2>/dev/null || echo "stage")
-      warn "Cloning op-rbuilder@${rbuilder_branch} (first run) ..."
-      mkdir -p "$services_dir"
-      git clone --depth=1 --branch "$rbuilder_branch" "$rbuilder_url" "$rbuilder_src" \
-        || die "Failed to clone op-rbuilder from $rbuilder_url"
-    fi
+    rbuilder_src=$(resolve_repo_path "op-rbuilder" "$services_dir" "$CONFIG_FILE") \
+      || die "Failed to resolve op-rbuilder repository path"
+    
     warn "Building op-rbuilder from source (~10-20 min, cached after first build) ..."
     (cd "$rbuilder_src" && cargo build --release -p op-rbuilder --bin op-rbuilder 2>&1) \
       || die "Failed to build op-rbuilder"
