@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"strings"
 
 	"github.com/docker/docker/client"
 	"github.com/ethera-labs/local-testnet/internal/observability/alloy"
@@ -13,6 +15,8 @@ import (
 	"github.com/ethera-labs/local-testnet/internal/observability/shared"
 	"github.com/ethera-labs/local-testnet/internal/observability/tempo"
 )
+
+const skipPrometheusEnv = "LOCALNET_OBSERVABILITY_SKIP_PROMETHEUS"
 
 func start(ctx context.Context) error {
 	slog.Info("instantiating Docker client")
@@ -40,8 +44,12 @@ func start(ctx context.Context) error {
 		return errors.Join(err, errors.New("failed to start Alloy service"))
 	}
 
-	if err := prometheus.Start(ctx, cli); err != nil {
-		return errors.Join(err, errors.New("failed to start Prometheus service"))
+	if skipPrometheus() {
+		slog.With("env", skipPrometheusEnv).Info("skipping Prometheus container startup")
+	} else {
+		if err := prometheus.Start(ctx, cli); err != nil {
+			return errors.Join(err, errors.New("failed to start Prometheus service"))
+		}
 	}
 
 	if err := tempo.Start(ctx, cli); err != nil {
@@ -49,4 +57,14 @@ func start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func skipPrometheus() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(skipPrometheusEnv)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

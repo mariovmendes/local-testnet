@@ -25,6 +25,15 @@ deploy-clean: ## Wipe all L2 state then redeploy from scratch
 	./scripts/deploy.sh --clean
 ######
 
+.PHONY: deploy-observability
+deploy-observability: ## Runs observality as well as a local prometheus
+	./scripts/deploy-observability.sh 
+######
+
+deploy-clean-observability: ## Cleans the observability
+	./scripts/deploy-observability.sh --clean
+######
+
 ### Go ###
 .PHONY: build
 build: ## Build the localnet binary

@@ -12,6 +12,8 @@ Deploys a complete Docker-based observability infrastructure with:
 - **Tempo**: Distributed tracing
 - **Alloy**: Telemetry data collection agent
 
+For a host-run Prometheus workflow, use `scripts/deploy-observability.sh`.
+
 ## Usage
 
 The observability stack runs independently of the L1 and L2 commands:
@@ -41,6 +43,9 @@ make clean-observability
 ### Service Ports
 
 All services use internal Docker networking. Only Grafana is exposed to the host.
+
+If you start Prometheus on the host, it listens on `http://localhost:9090` and
+scrapes the publisher at `http://localhost:18081/metrics`.
 
 ## Implementation Details
 

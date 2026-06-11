@@ -57,6 +57,8 @@ Source-built L2 services are configured through `l2.repositories`.
 
 Manages the observability stack for monitoring and debugging. Deploys Grafana, Prometheus, Loki, Tempo, and Alloy.
 
+For a host-run Prometheus workflow, use `scripts/deploy-observability.sh`.
+
 **📖 [Read Observability Documentation](internal/observability/README.md)**
 
 ### Ethera Labs Console (`frontend`)
