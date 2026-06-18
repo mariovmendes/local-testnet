@@ -14,8 +14,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$REPO_ROOT/configs/config.yaml"
 ENCLAVE_NAME="localnet"
 
-WALLET_ADDRESS="0x006050aCB7E46D4243E43373aD24182754bE3DA0"
-WALLET_PK="0x28d962c1dc95c4ba72b03a53bbed92020869e82880126dc537066169ccedcc8a"
+WALLET_ADDRESS="0x602A4643F513Da2816267B3f47288df47b6C6C21"
+WALLET_PK="0xb5685871a40a5c19507b67f858941d9d6bed5012c37eee572aff7356eb316174"
 # Sender of the canonical pre-signed deterministic-deployer tx (nonce 0 → 0x4e59b...)
 PROXY_SENDER="0x3fAB184622Dc19b6109349B94811493BF2a45362"
 DETERMINISTIC_DEPLOYER="0x4e59b44847b379578588920ca78fbf26c0b4956c"
@@ -836,9 +836,29 @@ print_summary() {
 # ─── main ─────────────────────────────────────────────────────────────────────
 main() {
   local do_clean=false
+  local clean_only=false
+
   for arg in "$@"; do
-    [[ "$arg" == "--clean" ]] && do_clean=true
+    case "$arg" in
+      --clean)
+        do_clean=true
+        ;;
+      --clean-only)
+        do_clean=true
+        clean_only=true
+        ;;
+      *)
+        die "Unknown argument: $arg"
+        ;;
+    esac
   done
+
+  if $clean_only; then
+     clean_l2
+     ok "Clean completed."
+     return 0
+  fi
+ 
 
   section "Preflight"
   check_prereqs
@@ -869,5 +889,4 @@ main() {
   wait_for_l2
   print_summary
 }
-
 main "$@"

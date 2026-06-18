@@ -50,8 +50,11 @@ func Start(ctx context.Context, client *client.Client) error {
 	},
 		&container.HostConfig{
 			NetworkMode: shared.NetworkMode,
+			ExtraHosts: []string{
+        			"host.docker.internal:host-gateway",
+ 			},
 			PortBindings: nat.PortMap{
-				"9090/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "9090"}},
+				"9090/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "1337"}},
 			},
 			Mounts: []mount.Mount{
 				{

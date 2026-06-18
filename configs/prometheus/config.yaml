@@ -5,4 +5,4 @@ scrape_configs:
   - job_name: "publisher"
     metrics_path: /metrics
     static_configs:
-      - targets: ["localhost:18081"]
+      - targets: ["host.docker.internal:18081"]

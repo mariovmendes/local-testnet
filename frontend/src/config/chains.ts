@@ -17,6 +17,15 @@ function requireNumber(name: keyof ImportMetaEnv): number {
   return parsed
 }
 
+// ethers v6 rejects URLs without a protocol prefix (like "/rpc/chain-a-builder").
+// This resolves relative paths to the current origin so ethers sees a full URL.
+function resolveUrl(url: string): string {
+  if (url.startsWith('/')) {
+    return window.location.origin + url
+  }
+  return url
+}
+
 function normalizePrivateKey(value: string | undefined): string {
   if (!value) {
     return ''
@@ -39,14 +48,15 @@ export const CHAIN_A_OP_RETH_RPC = requireEnv('VITE_CHAIN_A_OP_RETH_RPC')
 export const CHAIN_B_BUILDER_RPC = requireEnv('VITE_CHAIN_B_BUILDER_RPC')
 export const CHAIN_B_OP_RETH_RPC = requireEnv('VITE_CHAIN_B_OP_RETH_RPC')
 
-export const CHAIN_A_RPC = FLASHBLOCKS_ENABLED ? CHAIN_A_BUILDER_RPC : CHAIN_A_OP_RETH_RPC
-export const CHAIN_B_RPC = FLASHBLOCKS_ENABLED ? CHAIN_B_BUILDER_RPC : CHAIN_B_OP_RETH_RPC
+export const CHAIN_A_RPC = resolveUrl(FLASHBLOCKS_ENABLED ? CHAIN_A_BUILDER_RPC : CHAIN_A_OP_RETH_RPC)
+export const CHAIN_B_RPC = resolveUrl(FLASHBLOCKS_ENABLED ? CHAIN_B_BUILDER_RPC : CHAIN_B_OP_RETH_RPC)
 
-export const SIDECAR_A_URL = requireEnv('VITE_SIDECAR_A_URL')
-export const SIDECAR_B_URL = requireEnv('VITE_SIDECAR_B_URL')
+export const SIDECAR_A_URL = resolveUrl(requireEnv('VITE_SIDECAR_A_URL'))
+export const SIDECAR_B_URL = resolveUrl(requireEnv('VITE_SIDECAR_B_URL'))
 
-export const HEALTH_API_URL =
+export const HEALTH_API_URL = resolveUrl(
   env.VITE_HEALTH_API_URL?.trim() || 'http://localhost:8090'
+)
 
 // Otterscan explorer URLs (replaces Blockscout; same URL scheme: /tx/, /address/, /block/)
 export const CHAIN_A_EXPLORER = env.VITE_CHAIN_A_EXPLORER_URL?.trim() || 'http://localhost:5100'
@@ -75,8 +85,8 @@ export const CHAIN_B_PRIVATE_KEY = normalizePrivateKey(
 )
 
 // Bundler (ERC-4337 v0.7). Empty strings disable the Bundler Test tab.
-export const BUNDLER_A_URL = env.VITE_BUNDLER_A_URL?.trim() || ''
-export const BUNDLER_B_URL = env.VITE_BUNDLER_B_URL?.trim() || ''
+export const BUNDLER_A_URL = resolveUrl(env.VITE_BUNDLER_A_URL?.trim() || '')
+export const BUNDLER_B_URL = resolveUrl(env.VITE_BUNDLER_B_URL?.trim() || '')
 
 export const ENTRYPOINT_A = env.VITE_ENTRYPOINT_A?.trim() || ''
 export const ENTRYPOINT_B = env.VITE_ENTRYPOINT_B?.trim() || ''
@@ -86,3 +96,4 @@ export const SIMPLE_ACCOUNT_FACTORY_B = env.VITE_SIMPLE_ACCOUNT_FACTORY_B?.trim(
 
 export const BUNDLER_TEST_AVAILABLE =
   !!BUNDLER_A_URL && !!ENTRYPOINT_A && !!SIMPLE_ACCOUNT_FACTORY_A
+
