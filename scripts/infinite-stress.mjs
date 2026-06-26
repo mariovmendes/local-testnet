@@ -34,15 +34,14 @@ const DEFAULT_RECEIVE_GAS = 3_000_000n
 
 function parseArgs() {
   const a = process.argv.slice(2)
-  const p = { ...DEFAULTS, asset: 'erc20', direction: 'a_to_b', count: 10, gap: 0, amount: '0.001' }
+  const p = { ...DEFAULTS, asset: 'erc20', direction: 'a_to_b', interval: 10, amount: '0.001' }
 
   for (let i = 0; i < a.length; i++) {
     const v = () => a[++i]
     switch (a[i]) {
       case '--asset':     p.asset = v(); break
       case '--direction': p.direction = v(); break
-      case '--count':     p.count = parseInt(v(), 10); break
-      case '--gap':       p.gap = parseInt(v(), 10); break
+      case '--interval':  p.interval = parseInt(v(), 10); break
       case '--amount':    p.amount = v(); break
       case '--rpc-a':     p.CHAIN_A_RPC = v(); break
       case '--rpc-b':     p.CHAIN_B_RPC = v(); break
@@ -65,15 +64,15 @@ function parseArgs() {
 
 function printHelp() {
   console.log(`
-Usage: node scripts/stress-xt.mjs [options]
+Usage: node scripts/infinite-stress.mjs [options]
 
-Send cross-chain transactions (XTs) sequentially with an optional gap.
+Send XTs in an infinite loop at a fixed interval (fire-and-forget).
+Press Ctrl+C to stop and print stats.
 
 Options:
   --asset <erc20|eth>         Token type to bridge (default: erc20)
   --direction <a_to_b|b_to_a> Bridge direction     (default: a_to_b)
-  --count <number>            Total XTs to send    (default: 10)
-  --gap <ms>                  Gap between XTs      (default: 0)
+  --interval <ms>             Interval between XTs  (default: 10)
   --amount <string>           Amount per XT        (default: 0.001)
   --rpc-a <url>               Chain-A RPC URL
   --rpc-b <url>               Chain-B RPC URL
@@ -82,8 +81,8 @@ Options:
   -h, --help                  Show this message
 
 Examples:
-  node scripts/stress-xt.mjs --asset erc20 --count 10 --gap 500
-  node scripts/stress-xt.mjs --asset eth --direction b_to_a --count 20 --gap 0 --amount 0.01
+  node scripts/infinite-stress.mjs --interval 10
+  node scripts/infinite-stress.mjs --asset eth --interval 50 --amount 0.01
 `)
 }
 
@@ -151,40 +150,15 @@ async function submitXT(sidecarUrl, transactions) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ transactions: txs }),
   })
-  if (!res.ok) throw new Error(`submitXT ${res.status}: ${await res.text()}`)
-  return res.json()
-}
-
-async function getXTStatus(sidecarUrl, instanceId) {
-  const res = await fetch(`${sidecarUrl}/xt/${instanceId}`)
-  if (!res.ok) throw new Error(`getXTStatus ${res.status}`)
-  return res.json()
-}
-
-async function waitForDecision(sidecarUrl, instanceId, timeoutMs = 60000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const s = await getXTStatus(sidecarUrl, instanceId)
-      if (s.decision !== undefined) return s.decision
-      if (s.status === 'committed') return true
-      if (s.status === 'aborted') return false
-    } catch {}
-    await new Promise(r => setTimeout(r, 300))
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`submitXT ${res.status}: ${body}`)
   }
-  throw new Error('Timeout waiting for decision')
+  return res.json()
 }
 
 async function main() {
   const cfg = parseArgs()
-
-  console.log(`\n  XT Generator`)
-  console.log(`  ────────────`)
-  console.log(`  asset:     ${cfg.asset}`)
-  console.log(`  direction: ${cfg.direction}`)
-  console.log(`  count:     ${cfg.count}`)
-  console.log(`  gap:       ${cfg.gap}ms`)
-  console.log(`  amount:    ${cfg.amount}`)
 
   const providerA = new ethers.JsonRpcProvider(cfg.CHAIN_A_RPC)
   const providerB = new ethers.JsonRpcProvider(cfg.CHAIN_B_RPC)
@@ -211,116 +185,145 @@ async function main() {
 
   const sourceStride = isERC20 ? 2 : 1
 
+  // Check ETH liquidity pool if needed
   if (cfg.asset === 'eth') {
     const liqAddr = isAToB ? cfg.CHAIN_B_ETH_LIQUIDITY : cfg.CHAIN_A_ETH_LIQUIDITY
     const destChain = isAToB ? 'B' : 'A'
     const balance = await providerDest.getBalance(liqAddr)
-    const needed = parsedAmount * BigInt(cfg.count)
+    const needed = parsedAmount * 100n
     if (balance < needed) {
-      console.error(`\n  ETH liquidity pool ${destChain} has ${ethers.formatEther(balance)} ETH, needs ${ethers.formatEther(needed)} ETH.`)
-      console.error(`  Seed it first: node scripts/seed-liquidity.mjs --amount ${cfg.amount}`)
-      process.exit(1)
+      console.error(`\n  ETH liquidity pool ${destChain} has ${ethers.formatEther(balance)} ETH.`)
+      console.error(`  Seed more: node scripts/seed-liquidity.mjs --amount ${cfg.amount}\n`)
     }
   }
 
-  // Sequential nonce tracking
   let nonceSource = await providerSource.getTransactionCount(await signerSource.getAddress(), 'pending')
   let nonceDest = await providerDest.getTransactionCount(await signerDest.getAddress(), 'pending')
 
-  const results = { committed: 0, aborted: 0, errors: 0 }
   const startTime = Date.now()
+  let submitted = 0
+  let failed = 0
+  let conflicts = 0
+  let running = true
 
-  for (let i = 0; i < cfg.count; i++) {
+  process.on('SIGINT', () => {
+    running = false
+    setTimeout(() => {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      const rate = elapsed > 0 ? (submitted / parseFloat(elapsed)).toFixed(1) : '0'
+      console.log(`\n\n  ────────────────────────────────────`)
+      console.log(`  submitted: ${submitted}`)
+      console.log(`  failed:    ${failed}`)
+      console.log(`  conflicts: ${conflicts}`)
+      console.log(`  ${elapsed}s · ${rate} tx/s`)
+      console.log(`  ────────────────────────────────────`)
+      process.exit(0)
+    }, 100)
+  })
+
+  process.on('SIGTERM', () => {
+    running = false
+  })
+
+  const interval = cfg.interval
+  console.log(`\n  Infinite XT Stress Test`)
+  console.log(`  ──────────────────────`)
+  console.log(`  asset:     ${cfg.asset}`)
+  console.log(`  direction: ${cfg.direction}`)
+  console.log(`  interval:  ${interval}ms (${(1000 / interval).toFixed(0)} tx/s target)`)
+  console.log(`  amount:    ${cfg.amount}`)
+  console.log(`  source nonce: ${nonceSource}`)
+  console.log(`  dest nonce:   ${nonceDest}`)
+  console.log(`  Press Ctrl+C to stop\n`)
+
+  let nextTime = Date.now()
+  let lastReport = Date.now()
+  let reportCount = 0
+
+  while (running) {
     const sessionId = generateSessionId()
     const txs = {}
     let txSourceBytes, txDestBytes
 
-    if (isERC20) {
-      if (isAToB) {
-        const approve = await buildApprove(tokenSource, bridgeSource, parsedAmount, signerSource, sourceChainId, nonceSource)
-        const bridge = await buildBridgeERC20(bridgeSource, destChainId, tokenSource, parsedAmount, receiverDest, sessionId, signerSource, sourceChainId, nonceSource + 1)
-        const recv = await buildReceiveTokens(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceDest)
-        txs[sourceChainId] = [approve, bridge]
-        txs[destChainId] = [recv]
-        txSourceBytes = bridge
-        txDestBytes = recv
-      } else {
-        const approve = await buildApprove(tokenSource, bridgeSource, parsedAmount, signerSource, sourceChainId, nonceDest)
-        const bridge = await buildBridgeERC20(bridgeSource, destChainId, tokenSource, parsedAmount, receiverDest, sessionId, signerSource, sourceChainId, nonceDest + 1)
-        const recv = await buildReceiveTokens(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceSource)
-        txs[sourceChainId] = [approve, bridge]
-        txs[destChainId] = [recv]
-        txSourceBytes = bridge
-        txDestBytes = recv
-      }
-    } else {
-      if (isAToB) {
-        const bridge = await buildBridgeEth(bridgeSource, destChainId, receiverDest, sessionId, parsedAmount, signerSource, sourceChainId, nonceSource)
-        const recv = await buildReceiveEth(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceDest)
-        txs[sourceChainId] = [bridge]
-        txs[destChainId] = [recv]
-        txSourceBytes = bridge
-        txDestBytes = recv
-      } else {
-        const bridge = await buildBridgeEth(bridgeSource, destChainId, receiverDest, sessionId, parsedAmount, signerSource, sourceChainId, nonceDest)
-        const recv = await buildReceiveEth(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceSource)
-        txs[sourceChainId] = [bridge]
-        txs[destChainId] = [recv]
-        txSourceBytes = bridge
-        txDestBytes = recv
-      }
-    }
-
-    // Advance nonces for next XT
-    if (isAToB) {
-      nonceSource += sourceStride
-      nonceDest += 1
-    } else {
-      nonceSource += 1
-      nonceDest += sourceStride
-    }
-
-    const txHashSource = ethers.Transaction.from(txSourceBytes).hash
-    const txHashDest = ethers.Transaction.from(txDestBytes).hash
-
-    const resp = await submitXT(cfg.SIDECAR_A_URL, txs)
-    const ok = await waitForDecision(cfg.SIDECAR_A_URL, resp.instance_id)
-
-    if (!ok) {
-      results.aborted++
-      console.log(`  [${i + 1}/${cfg.count}] XT aborted by sidecar`)
-      if (cfg.gap > 0 && i < cfg.count - 1) await new Promise(r => setTimeout(r, cfg.gap))
-      continue
-    }
-
     try {
-      const [receiptSource, receiptDest] = await Promise.all([
-        providerSource.waitForTransaction(txHashSource, 1, 30000),
-        providerDest.waitForTransaction(txHashDest, 1, 30000),
-      ])
-
-      if (receiptSource?.status === 1 && receiptDest?.status === 1) {
-        results.committed++
-        process.stdout.write(`  [${i + 1}/${cfg.count}] ✓ committed  (${txHashSource.slice(0, 10)}… | ${txHashDest.slice(0, 10)}…)\n`)
+      if (isERC20) {
+        if (isAToB) {
+          const approve = await buildApprove(tokenSource, bridgeSource, parsedAmount, signerSource, sourceChainId, nonceSource)
+          const bridge = await buildBridgeERC20(bridgeSource, destChainId, tokenSource, parsedAmount, receiverDest, sessionId, signerSource, sourceChainId, nonceSource + 1)
+          const recv = await buildReceiveTokens(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceDest)
+          txs[sourceChainId] = [approve, bridge]
+          txs[destChainId] = [recv]
+          txSourceBytes = bridge
+          txDestBytes = recv
+        } else {
+          const approve = await buildApprove(tokenSource, bridgeSource, parsedAmount, signerSource, sourceChainId, nonceDest)
+          const bridge = await buildBridgeERC20(bridgeSource, destChainId, tokenSource, parsedAmount, receiverDest, sessionId, signerSource, sourceChainId, nonceDest + 1)
+          const recv = await buildReceiveTokens(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceSource)
+          txs[sourceChainId] = [approve, bridge]
+          txs[destChainId] = [recv]
+          txSourceBytes = bridge
+          txDestBytes = recv
+        }
       } else {
-        results.aborted++
-        process.stdout.write(`  [${i + 1}/${cfg.count}] ✗ on-chain failure\n`)
+        if (isAToB) {
+          const bridge = await buildBridgeEth(bridgeSource, destChainId, receiverDest, sessionId, parsedAmount, signerSource, sourceChainId, nonceSource)
+          const recv = await buildReceiveEth(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceDest)
+          txs[sourceChainId] = [bridge]
+          txs[destChainId] = [recv]
+          txSourceBytes = bridge
+          txDestBytes = recv
+        } else {
+          const bridge = await buildBridgeEth(bridgeSource, destChainId, receiverDest, sessionId, parsedAmount, signerSource, sourceChainId, nonceDest)
+          const recv = await buildReceiveEth(bridgeDest, sessionId, sourceChainId, destChainId, bridgeSource, receiverDest, signerDest, destChainId, nonceSource)
+          txs[sourceChainId] = [bridge]
+          txs[destChainId] = [recv]
+          txSourceBytes = bridge
+          txDestBytes = recv
+        }
       }
-    } catch {
-      results.errors++
-      process.stdout.write(`  [${i + 1}/${cfg.count}] ⚠ receipt timeout\n`)
+
+      await submitXT(cfg.SIDECAR_A_URL, txs)
+      submitted++
+
+      if (isAToB) {
+        nonceSource += sourceStride
+        nonceDest += 1
+      } else {
+        nonceSource += 1
+        nonceDest += sourceStride
+      }
+    } catch (err) {
+      failed++
+      const msg = err.message
+
+      if (msg.includes('conflict') || msg.includes('nonce')) {
+        conflicts++
+        try {
+          nonceSource = await providerSource.getTransactionCount(await signerSource.getAddress(), 'pending')
+          nonceDest = await providerDest.getTransactionCount(await signerDest.getAddress(), 'pending')
+        } catch {}
+      } else if (msg.includes('fetch failed') || msg.includes('ECONNREFUSED')) {
+        if (failed % 10 === 1) process.stderr.write(`\r  ⚠ connection error — retrying...`)
+      }
+
+      if (running && failed < 3) await new Promise(r => setTimeout(r, 50))
     }
 
-    if (cfg.gap > 0 && i < cfg.count - 1) {
-      await new Promise(r => setTimeout(r, cfg.gap))
+    reportCount++
+    if (reportCount >= 100) {
+      const elapsed = (Date.now() - lastReport) / 1000
+      const rate = elapsed > 0 ? (100 / elapsed).toFixed(1) : '?'
+      process.stdout.write(`\r  submitted: ${submitted} | failed: ${failed} | conflicts: ${conflicts} | ${rate} tx/s  `)
+      lastReport = Date.now()
+      reportCount = 0
+    }
+
+    if (running) {
+      nextTime += interval
+      const delay = nextTime - Date.now()
+      if (delay > 0) await new Promise(r => setTimeout(r, delay))
     }
   }
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-  const pct = cfg.count > 0 ? Math.round((results.committed / cfg.count) * 100) : 0
-  console.log(`\n  ────────────────────────────────────`)
-  console.log(`  ${cfg.count} total · ${results.committed} committed · ${results.aborted} aborted · ${results.errors} errors`)
-  console.log(`  ${elapsed}s · success rate ${pct}%\n`)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })

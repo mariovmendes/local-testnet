@@ -2,6 +2,10 @@
   "name": "stress-xt",
   "private": true,
   "type": "module",
+  "scripts": {
+    "stress": "node stress-xt.mjs",
+    "stress:infinite": "node infinite-stress.mjs"
+  },
   "dependencies": {
     "ethers": "^6.13.4"
   }
