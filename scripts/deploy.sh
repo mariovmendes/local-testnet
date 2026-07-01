@@ -771,8 +771,12 @@ clean_l2() {
 run_l2() {
   info "Starting L2 deployment (this takes a few minutes)..."
   cd "$REPO_ROOT"
+  # MOCK_MODE (default true): sidecars submit fabricated proofs and a
+  # MockVerifier (accept-always) is deployed on L1 in place of a real SP1
+  # verifier. Set MOCK_MODE=false to run against a real op-succinct prover
+  # pipeline once one exists. Never do this against a network with real value.
   DOCKER_HOST="$DOCKER_HOST" \
-    ./cmd/localnet/bin/localnet l2 2>&1 | tee /tmp/localnet-l2-deploy.log
+    ./cmd/localnet/bin/localnet l2 --mock-mode="${MOCK_MODE:-true}" 2>&1 | tee /tmp/localnet-l2-deploy.log
   ok "L2 deployment completed."
 }
 

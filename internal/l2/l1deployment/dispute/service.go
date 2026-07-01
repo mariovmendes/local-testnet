@@ -202,6 +202,12 @@ func (s *Service) generateEnvFile() error {
 func (s *Service) runJustCommand(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "just", args...)
 	cmd.Dir = s.contractsDir
+	// MOCK_MODE is consumed by scripts/deploy.sh in the ethera-contracts repo
+	// (deploy-network target): when true, it deploys a MockVerifier and uses
+	// it in place of NETWORK_VERIFIER_ADDRESS. Passed explicitly (rather than
+	// relying on shell inheritance) so the Go-level --mock-mode flag is
+	// authoritative regardless of how this process was launched.
+	cmd.Env = append(os.Environ(), fmt.Sprintf("MOCK_MODE=%t", s.cfg.MockMode))
 	forgeOut := logfilter.NewForgeWriter(os.Stdout)
 	cmd.Stdout = forgeOut
 	cmd.Stderr = forgeOut

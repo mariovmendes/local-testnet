@@ -112,6 +112,7 @@ var (
 		{"frontend-dev-enabled", "l2.frontend.dev-enabled", false, "Run the Ethera Labs Console with Vite hot-reload, mounting frontend/ source into the container (requires flashblocks and sidecar)"},
 		{"alt-da-enabled", "l2.alt-da.enabled", false, "Enable AltDA mode: post transaction batches to a local DA server instead of L1"},
 		{"op-succinct-enabled", "l2.op-succinct.enabled", false, "Enable op-succinct mock-mode validity services in localnet"},
+		{"mock-mode", "l2.mock-mode", true, "Run with a fabricated proof pipeline instead of a real ZK prover: sidecars submit fabricated proofs, and a MockVerifier (accept-always) is deployed on L1 in place of a real SP1 verifier"},
 	}
 )
 

@@ -42,6 +42,13 @@ type (
 		Frontend              FrontendConfig                `mapstructure:"frontend"`
 		AltDA                 AltDAConfig                   `mapstructure:"alt-da"`
 		OPSuccinct            OPSuccinctConfig              `mapstructure:"op-succinct"`
+		// MockMode runs the publisher/sidecars/L1 with a fabricated proof
+		// pipeline instead of a real ZK prover: sidecars submit fabricated
+		// proofs, and a MockVerifier contract (accept-always) is deployed on
+		// L1 in place of a real SP1 verifier. Distinct from OPSuccinct.Enabled,
+		// which controls a separate (currently unimplemented) real-prover
+		// integration.
+		MockMode bool `mapstructure:"mock-mode"`
 	}
 
 	// OPSuccinctConfig controls whether localnet runs the op-succinct mock-mode

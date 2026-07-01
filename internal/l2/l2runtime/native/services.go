@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ethera-labs/local-testnet/configs"
@@ -280,6 +281,11 @@ func (b *Builder) NodeBatcherProposerSpecs() ([]supervisor.ProcessSpec, error) {
 // PublisherSpec returns the ProcessSpec for the shared Publisher service.
 // composeL2OOAddr and gameFactoryAddr come from the L1 deployment state.
 func (b *Builder) PublisherSpec(registryDir string, composeL2OOAddr, gameFactoryAddr string) supervisor.ProcessSpec {
+	// PROOFS_ENABLED/PROOFS_REQUIRE_PROOF are read nowhere in publisher's
+	// code today (mock mode is achieved by fabricated proofs arriving from
+	// the sidecars, not by a publisher-side flag) — kept here only for
+	// forward compatibility, derived from MockMode so they stay coherent
+	// with it.
 	return supervisor.ProcessSpec{
 		Name:   "publisher",
 		Binary: b.bins.Publisher,
@@ -291,8 +297,9 @@ func (b *Builder) PublisherSpec(registryDir string, composeL2OOAddr, gameFactory
 			"LOG_LEVEL":                 "debug",
 			"LOG_PRETTY":                "true",
 			"AUTH_ENABLED":              "false",
-			"PROOFS_ENABLED":            "false",
-			"PROOFS_REQUIRE_PROOF":      "false",
+			"MOCK_MODE":                 strconv.FormatBool(b.cfg.MockMode),
+			"PROOFS_ENABLED":            strconv.FormatBool(!b.cfg.MockMode),
+			"PROOFS_REQUIRE_PROOF":      strconv.FormatBool(!b.cfg.MockMode),
 			"CONSENSUS_TIMEOUT":         "20s",
 			"CONSENSUS_PERIOD_DURATION": "60s",
 			"CONSENSUS_PROOF_WINDOW":    "600s",
@@ -331,6 +338,9 @@ func (b *Builder) SidecarSpecs(mailboxA, mailboxB string) []supervisor.ProcessSp
 			"SIDECAR_PEERS":                             fmt.Sprintf("%d=http://127.0.0.1:%d", chainBConfig.ID, SidecarBAPIPort),
 			"SIDECAR_LOG_LEVEL":                         "debug",
 			"SIDECAR_LOG_FORMAT":                        "pretty",
+			"SIDECAR_MOCK_PROOF_ENABLED":                 strconv.FormatBool(b.cfg.MockMode),
+			"SIDECAR_MOCK_PROOF_PUBLISHER_HTTP_ADDR":     fmt.Sprintf("127.0.0.1:%d", PublisherMetricsPort),
+			"SIDECAR_MOCK_PROOF_INTERVAL_SECS":           "60",
 		},
 	}
 	specB := supervisor.ProcessSpec{
@@ -347,6 +357,9 @@ func (b *Builder) SidecarSpecs(mailboxA, mailboxB string) []supervisor.ProcessSp
 			"SIDECAR_PEERS":                             fmt.Sprintf("%d=http://127.0.0.1:%d", chainAConfig.ID, SidecarAAPIPort),
 			"SIDECAR_LOG_LEVEL":                         "debug",
 			"SIDECAR_LOG_FORMAT":                        "pretty",
+			"SIDECAR_MOCK_PROOF_ENABLED":                 strconv.FormatBool(b.cfg.MockMode),
+			"SIDECAR_MOCK_PROOF_PUBLISHER_HTTP_ADDR":     fmt.Sprintf("127.0.0.1:%d", PublisherMetricsPort),
+			"SIDECAR_MOCK_PROOF_INTERVAL_SECS":           "60",
 		},
 	}
 	return []supervisor.ProcessSpec{specA, specB}
