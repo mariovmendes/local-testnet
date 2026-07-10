@@ -484,9 +484,24 @@ func (b *Builder) rbuilderSpec(chain configs.L2ChainName, httpPort, enginePort, 
 	configPath := filepath.Join(b.networksDir, string(chain))
 	dataDir := filepath.Join(b.dataDir, string(chain), "rbuilder")
 	suffix := chainSuffix(chain)
+
+	var sidecarPort int
+	switch chain {
+	case configs.L2ChainNameRollupA:
+		sidecarPort = SidecarAAPIPort
+	case configs.L2ChainNameRollupB:
+		sidecarPort = SidecarBAPIPort
+	}
+
 	return supervisor.ProcessSpec{
 		Name:   "op-rbuilder-" + suffix,
 		Binary: b.bins.OpRbuilder,
+		Env: map[string]string{
+			"SIDECAR_ENDPOINT":            fmt.Sprintf("http://127.0.0.1:%d", sidecarPort),
+			"SIDECAR_POLL_TIMEOUT_MS":     "200",
+			"SIDECAR_MAX_RETRIES":         "5",
+			"SIDECAR_PERMISSIONS_ENABLED": "false",
+		},
 		Args: []string{
 			"node",
 			"--chain", filepath.Join(configPath, "genesis.json"),
