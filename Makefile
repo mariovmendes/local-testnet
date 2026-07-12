@@ -25,8 +25,8 @@ deploy-clean: ## Wipe all L2 state then redeploy from scratch
 	./scripts/deploy.sh --clean
 ######
 
-.PHONY: clean-deploy
-clean-deploy: ## Shutdown L2 services
+.PHONY: deploy-clean-only
+deploy-clean-only: ## Shutdown L2 services
 	./scripts/deploy.sh --clean-only
 ######
 
