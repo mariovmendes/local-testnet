@@ -14,7 +14,7 @@ const DEFAULTS = {
   CHAIN_B_TOKEN: '0x73af42789cdfa96d8cd46cdb2458821292f10b9f',
   CHAIN_A_ETH_LIQUIDITY: '0x0382bc1c7e9df089adf6b1335d015e28d1f54b69',
   CHAIN_B_ETH_LIQUIDITY: '0x0382bc1c7e9df089adf6b1335d015e28d1f54b69',
-  INTERVAL: 200
+  INTERVAL: 500
 }
 
 const ERC20_ABI = [
@@ -116,10 +116,12 @@ async function main(){
         setTimeout(() => {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
             const rate = elapsed > 0 ? (submitted / parseFloat(elapsed)).toFixed(1) : '0'
+            const full_rate = elapsed > 0 ? ((submitted + failed) / parseFloat(elapsed)).toFixed(1) : '0'
             console.log(`\n\n  ────────────────────────────────────`)
             console.log(`  submitted: ${submitted}`)
             console.log(`  failed:    ${failed}`)
             console.log(`  ${elapsed}s · ${rate} tx/s`)
+            console.log(`  Full rate: ${full_rate} tx/s`)
             console.log(`  ────────────────────────────────────`)
             saveAccounts()
             process.exit(0)

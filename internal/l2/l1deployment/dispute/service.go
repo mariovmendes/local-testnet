@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,12 +12,22 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/ethera-labs/local-testnet/configs"
 	"github.com/ethera-labs/local-testnet/internal/logger"
 	"github.com/ethera-labs/local-testnet/internal/logfilter"
 	"github.com/ethereum/go-ethereum/common"
 )
+
+// deployNetworkMaxAttempts bounds retries for the "deploy-network" just
+// recipe. forge occasionally dies with SIGPIPE (exit 141) right after
+// printing its last broadcast line, from an internal pipe unrelated to our
+// own stdout/stderr wiring (reproduced independently of just/tee/the Go
+// process's own output handling); the on-chain broadcast that already
+// succeeded is harmless to redo, so retrying the whole recipe is the
+// practical mitigation until upstream foundry fixes the race.
+const deployNetworkMaxAttempts = 3
 
 //go:embed *.tmpl
 var templatesFS embed.FS
@@ -78,7 +89,7 @@ func (s *Service) Deploy(ctx context.Context) (DeploymentContracts, error) {
 	}
 
 	s.logger.Info("running just deploy")
-	if err := s.runJustCommand(ctx, "deploy-network", s.cfg.Dispute.NetworkName); err != nil {
+	if err := s.runJustCommandWithRetry(ctx, deployNetworkMaxAttempts, "deploy-network", s.cfg.Dispute.NetworkName); err != nil {
 		return DeploymentContracts{}, fmt.Errorf("failed to deploy network '%s': %w", s.cfg.Dispute.NetworkName, err)
 	}
 
@@ -222,6 +233,31 @@ func (s *Service) runJustCommand(ctx context.Context, args ...string) error {
 	}
 
 	return nil
+}
+
+// runJustCommandWithRetry runs runJustCommand up to maxAttempts times,
+// retrying only on exit code 141 (SIGPIPE) — see deployNetworkMaxAttempts.
+// Any other failure is returned immediately without retrying.
+func (s *Service) runJustCommandWithRetry(ctx context.Context, maxAttempts int, args ...string) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = s.runJustCommand(ctx, args...)
+		if lastErr == nil {
+			return nil
+		}
+
+		var exitErr *exec.ExitError
+		if !errors.As(lastErr, &exitErr) || exitErr.ExitCode() != 141 {
+			return lastErr
+		}
+
+		s.logger.
+			With("attempt", attempt).
+			With("max_attempts", maxAttempts).
+			Warn("just command died with SIGPIPE (exit 141), likely a forge crash unrelated to deployment correctness; retrying")
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("gave up after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // parseDeploymentContracts reads the contract deployment outputs produced by

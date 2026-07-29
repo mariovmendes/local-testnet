@@ -1,0 +1,141 @@
+l1:
+  enabled: true
+  observability:
+    enabled: true
+
+l2:
+  l1-chain-id: 3151908
+  l1-el-url: http://127.0.0.1:32801
+  l1-cl-url: http://127.0.0.1:32811
+  ethera-labs-name: localnet # Ethera Labs network name for publisher registry, e.g. hoodi
+  coordinator-private-key: 0x357478a1ec60d1eec261ecefb8aa63278def9fe89a1144d99128e1129da28f2c
+  wallet:
+    private-key: 0xb5685871a40a5c19507b67f858941d9d6bed5012c37eee572aff7356eb316174
+    address: 0x602A4643F513Da2816267B3f47288df47b6C6C21
+  blockscout:
+    enabled: false
+  flashblocks:
+    enabled: true
+    # Defaults to ethera-labs/op-rbuilder#stage over SSH.
+    # Override locally with OP_RBUILDER_PATH=/path/to/op-rbuilder.
+    op-rbuilder-image-tag: "latest"
+    rollup-boost-image-tag: "latest"
+    rollup-a-rpc-port: 17545
+    rollup-b-rpc-port: 27545
+  sidecar:
+    enabled: true  # requires flashblocks
+    # Defaults to ethera-labs/sidecar#chore/specs over SSH.
+    # Override locally with SIDECAR_PATH=/path/to/sidecar.
+    rollup-a-api-port: 17090
+    rollup-b-api-port: 27090
+  bundler:
+    enabled: true  # requires flashblocks
+    rollup-a-api-port: 17082
+    rollup-b-api-port: 27082
+  alt-da:
+    enabled: false  # Route batches through AltDA servers instead of posting calldata to L1
+    # Requires repositories.ethera-contracts to resolve to a checkout that contains op-alt-da.
+    # "KeccakCommitment" is the default; switch only if the target environment expects GenericCommitment.
+    da-commitment-type: "KeccakCommitment"
+    # Reuse predeployed AltDA challenge contracts instead of creating fresh ones.
+    # Enable this only for long-lived environments after the proxy and implementation addresses are pinned.
+    skip-l1-deploy: false
+    challenge-proxy-address: ""
+    challenge-impl-address: ""
+    # Deployment parameters used only when localnet owns the AltDA contract lifecycle.
+    # Small values (e.g. 4) reduce finality lag on public L1 testnets.
+    # Larger values (e.g. 100) match production timings but extend local proving cycles.
+    da-challenge-window: 4
+    da-resolve-window: 4
+    da-bond-size: 1
+    da-resolver-refund-percentage: 0
+  op-succinct:
+    enabled: false  # Run op-succinct validity services in local mock mode
+  chain-configs:
+    rollup-a:
+      id: 77777
+      rpc-port: 18545
+    rollup-b:
+      id: 88888
+      rpc-port: 28545
+  deployment-target: live  # "live" or "calldata"
+  genesis-balance-wei: "100000000000000000000000"  # 100_000 ETH for funded accounts
+  # curl https://us-docker.pkg.dev/v2/oplabs-tools-artifacts/images/{REPOSITORY_NAME}/tags/list to fetch list of available tags
+  # these versions represent fully compatible builds that work together as expected in the local testnet setup.
+  # stage branch versions can be found here: https://github.com/ssvlabs/gitops-stage/blob/main/environments/ovh/optimism/optimism-stack.yaml
+  # prod branch versions can be found here: https://github.com/ssvlabs/gitops-production/blob/main/environments/aws/hoodi/compose/op-stack-a.yaml
+  # keep in mind - changing the versions may lead to unexpected behavior due to incompatibilities between different components and local testnet data structures.
+  images:
+    op-deployer:
+      tag: v0.4.5
+    op-node:
+      tag: v1.16.2
+    op-proposer:
+      tag: v1.10.0
+    op-batcher:
+      tag: v1.16.2
+    op-reth:
+      tag: v1.11.5
+  repositories:
+    # Note: For local development, use local-path instead of url+branch.
+    # Paths are resolved relative to the project root (where you run commands).
+    # Examples:
+    #   local-path: ~/projects/op-geth              # Home directory (recommended)
+    #   local-path: ../op-geth                      # Relative path (one level up)
+    #   local-path: ../../parent-dir/op-geth        # Relative path (two levels up)
+    #   local-path: /absolute/path/to/op-geth       # Absolute path
+    op-geth:
+      url: git@github.com:ethereum-optimism/op-geth.git
+      branch: v1.101603.4
+    op-rbuilder:
+      #local-path: ../op-rbuilder
+      url: git@github.com:mariovmendes/op-rbuilder.git
+      branch: stage
+    publisher:
+      #local-path: ../publisher
+      url: git@github.com:mariovmendes/publisher.git
+      branch: feat/new_metrics
+    sidecar:
+      #local-path: ../sidecar
+      url: git@github.com:ethera-labs/sidecar.git
+      branch: feat/interleaved
+    ethera-contracts:
+      #local-path: ../contracts
+      url: git@github.com:mariovmendes/contracts.git
+      branch: main
+    bundler:
+      url: https://github.com/ethera-labs/ethera-bundler
+      branch: main
+      # Example:
+      # local-path: ~/projects/ethera-bundler
+    # Required when l2.bundler.enabled=true. Source for EntryPoint v0.7 and
+    # EntryPointSimulations, compiled via `localnet l2 compile` and deployed
+    # to each rollup.
+    account-abstraction:
+      url: https://github.com/eth-infinitism/account-abstraction.git
+      branch: releases/v0.7
+    # Used only when l2.op-succinct.enabled=true.
+    op-succinct:
+      url: git@github.com:ethera-labs/op-succinct.git
+      branch: main
+  dispute:
+    network-name: "my-rollup"  # arbitrary name for this deployment
+    guardian-address: "0x602A4643F513Da2816267B3f47288df47b6C6C21"  # use your wallet address
+    owner-address: "0x602A4643F513Da2816267B3f47288df47b6C6C21"
+    proposer-address: "0x602A4643F513Da2816267B3f47288df47b6C6C21"
+    verifier-address: "0x602A4643F513Da2816267B3f47288df47b6C6C21"
+    aggregation-vkey: "0x0042b6b6338effae7a49c21ad2601b39db282f9a8541da8ee1c539555b519dea"
+    proof-maturity-delay-seconds: 604800
+    dispute-game-finality-delay-seconds: 302400
+    dispute-game-init-bond: 80000000000000000
+    #network-name: network-name # e.g. hoodi
+    #explorer-url: http://127.0.0.1:8080 # e.g. http://hoodi.etherscan.io
+    #explorer-api-url: http://127.0.0.1:8080/api # e.g. http://hoodi.etherscan.io/api
+    #verifier-address: "0x0000000000000000000000000000000000000000" # SP1 verifier contract address
+    #owner-address: "0x0000000000000000000000000000000000000000" # Owner address (can be equal to wallet.address)
+    #proposer-address: "0x0000000000000000000000000000000000000000" # Proposer address (can be equal to wallet.address)
+    #aggregation-vkey: "0x0000000000000000000000000000000000000000000000000000000000000000" # Aggregation verification key
+    #guardian-address: "0x0000000000000000000000000000000000000000" # Guardian address (can be equal to wallet.address)
+    #proof-maturity-delay-seconds: 604800  # Proof maturity delay (default: 7 days = 604800 seconds)
+    #dispute-game-finality-delay-seconds: 302400  # Dispute game finality delay (default: 3.5 days = 302400 seconds)
+    #dispute-game-init-bond: 80000000000000000  # Initial bond for dispute games (default: 0.08 ether = 80000000000000000 wei)

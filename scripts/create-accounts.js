@@ -13,7 +13,7 @@ const DEFAULTS = {
   CHAIN_B_TOKEN: '0x73af42789cdfa96d8cd46cdb2458821292f10b9f',
   CHAIN_A_ETH_LIQUIDITY: '0x0382bc1c7e9df089adf6b1335d015e28d1f54b69',
   CHAIN_B_ETH_LIQUIDITY: '0x0382bc1c7e9df089adf6b1335d015e28d1f54b69',
-  AMOUNT_ACCOUNTS: 10000
+  AMOUNT_ACCOUNTS: 1000
 }
 
 class Account {
@@ -100,7 +100,7 @@ async function broadcastAndWait(provider, signedTx, label) {
 
 async function main() {
       let accounts = [];
-      const value = ethers.parseEther('1000');
+      const value = ethers.parseEther('10000');
       console.log("GENERATING ACCOUNTS "+DEFAULTS.AMOUNT_ACCOUNTS)
       for(let i=0;i<DEFAULTS.AMOUNT_ACCOUNTS;i++){
         const wallet = ethers.Wallet.createRandom()
@@ -118,7 +118,7 @@ async function main() {
       const nonceA = await providerA.getTransactionCount(await signerA.getAddress(), 'pending')
       const nonceB = await providerB.getTransactionCount(await signerB.getAddress(), 'pending')
 
-      console.log(`\n  Minting 1000 ERC20 tokens on chain A for all accounts`)
+      console.log(`\n  Minting ` + value + ` ERC20 tokens on chain A for all accounts`)
       await signAndBroadcastAll(
         providerA, signerA, DEFAULTS.CHAIN_A_ID, nonceA, accounts,
         (acct, signer, chainId, nonce) => buildMintTx(DEFAULTS.CHAIN_A_TOKEN, acct.address, value, signer, chainId, nonce),
