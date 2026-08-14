@@ -58,6 +58,10 @@ run-l1: build ## Run the L1 localnet (Kurtosis enclave)
 show-l1: ## Inspect the L1 Kurtosis enclave
 	kurtosis enclave inspect ${ENCLAVE_NAME}
 
+.PHONY: sync-l1-ports
+sync-l1-ports: ## Write the running enclave's el-1/cl-1 ports into configs/config.yaml
+	./scripts/sync-l1-ports.sh
+
 .PHONY: stop-l1
 stop-l1: ## Stop the L1 Kurtosis enclave
 	kurtosis enclave stop ${ENCLAVE_NAME} || true

@@ -63,6 +63,12 @@ func (b *EnvBuilder) BuildComposeEnv(cfg configs.L2, gameFactoryAddr common.Addr
 	env["WALLET_ADDRESS"] = cfg.Wallet.Address
 	env["L1_EL_URL"] = cfg.L1ElURL
 	env["L1_CL_URL"] = cfg.L1ClURL
+	// Containers on the localnet-l2 network can't reach the host loopback
+	// address Kurtosis binds L1 ports to. Services that join kt-localnet
+	// (op-node, op-batcher, op-proposer, publisher) use these container-name
+	// addresses instead; see deployer.Apply for the equivalent op-deployer fix.
+	env["L1_EL_URL_INTERNAL"] = toKurtosisContainerURL(cfg.L1ElURL, kurtosisL1ELContainerName, kurtosisL1ELPort)
+	env["L1_CL_URL_INTERNAL"] = toKurtosisContainerURL(cfg.L1ClURL, kurtosisL1CLContainerName, kurtosisL1CLPort)
 	env["L1_CHAIN_ID"] = fmt.Sprintf("%d", cfg.L1ChainID)
 	env["ETHERA_NETWORK_NAME"] = cfg.EtheraNetworkName
 	env["COORDINATOR_PRIVATE_KEY"] = cfg.CoordinatorPrivateKey
@@ -294,6 +300,32 @@ func derivePeerKeys(secretHex string) (string, string, error) {
 	}
 	pub := crypto.FromECDSAPub(&priv.PublicKey) // 65 bytes: 0x04 || X || Y
 	return sk, hex.EncodeToString(pub[1:]), nil
+}
+
+const (
+	kurtosisL1ELContainerName = "el-1-geth-lighthouse"
+	kurtosisL1ELPort          = 8545
+	kurtosisL1CLContainerName = "cl-1-lighthouse-geth"
+	kurtosisL1CLPort          = 4000
+)
+
+// toKurtosisContainerURL rewrites a host-facing L1 URL (127.0.0.1, localhost,
+// or host.docker.internal) to the Kurtosis container's name and in-network
+// port, so containers joined to the kt-localnet network can reach it.
+func toKurtosisContainerURL(hostURL, containerName string, containerPort int) string {
+	rewritten := strings.NewReplacer(
+		"host.docker.internal", containerName,
+		"127.0.0.1", containerName,
+		"localhost", containerName,
+	).Replace(hostURL)
+
+	if strings.Contains(rewritten, containerName+":") {
+		if colonIdx := strings.LastIndex(rewritten, ":"); colonIdx != -1 {
+			rewritten = fmt.Sprintf("%s:%d", rewritten[:colonIdx], containerPort)
+		}
+	}
+
+	return rewritten
 }
 
 // expandUserHome expands a leading ~ to the current user's home directory.

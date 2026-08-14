@@ -19,9 +19,13 @@ type RunOptions struct {
 	Volumes    map[string]string // host:container
 	WorkDir    string
 	User       string
-	AutoRemove bool
-	StreamLogs bool
-	CaptureOut bool
+	// NetworkMode joins the container to an existing Docker network by name
+	// (e.g. "kt-localnet" to reach Kurtosis services from within the container).
+	// Leave empty to use the default bridge network.
+	NetworkMode string
+	AutoRemove  bool
+	StreamLogs  bool
+	CaptureOut  bool
 	// CaptureErr appends stderr to the returned string. Combine with CaptureOut
 	// to capture output regardless of which stream the process used.
 	CaptureErr bool
@@ -39,7 +43,8 @@ func (c *Client) Run(ctx context.Context, opts RunOptions) (string, error) {
 
 	hostConfig := &container.HostConfig{
 		// Suppress AutoRemove while capturing so ContainerLogs can drain first.
-		AutoRemove: opts.AutoRemove && !capturing,
+		AutoRemove:  opts.AutoRemove && !capturing,
+		NetworkMode: container.NetworkMode(opts.NetworkMode),
 	}
 
 	if len(opts.Volumes) > 0 {

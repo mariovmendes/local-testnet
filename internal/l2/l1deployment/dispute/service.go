@@ -108,35 +108,29 @@ func (s *Service) generateNetworksToml() error {
 	}
 
 	type templateData struct {
-		NetworkName                     string
-		RpcURL                          string
-		ChainID                         int
-		ExplorerURL                     string
-		ExplorerAPIURL                  string
-		VerifierAddress                 string
-		OwnerAddress                    string
-		ProposerAddress                 string
-		AggregationVkey                 string
-		GuardianAddress                 string
-		ProofMaturityDelaySeconds       int
-		DisputeGameFinalityDelaySeconds int
-		DisputeGameInitBond             string
+		NetworkName     string
+		RpcURL          string
+		ChainID         int
+		ExplorerURL     string
+		ExplorerAPIURL  string
+		VerifierAddress string
+		OwnerAddress    string
+		ProposerAddress string
+		AggregationVkey string
+		DeployerAddress string
 	}
 
 	data := templateData{
-		NetworkName:                     s.cfg.Dispute.NetworkName,
-		RpcURL:                          s.cfg.L1ElURL,
-		ChainID:                         s.cfg.L1ChainID,
-		ExplorerURL:                     s.cfg.Dispute.ExplorerURL,
-		ExplorerAPIURL:                  s.cfg.Dispute.ExplorerAPIURL,
-		VerifierAddress:                 s.cfg.Dispute.VerifierAddress,
-		OwnerAddress:                    s.cfg.Dispute.OwnerAddress,
-		ProposerAddress:                 s.cfg.Dispute.ProposerAddress,
-		AggregationVkey:                 s.cfg.Dispute.AggregationVkey,
-		GuardianAddress:                 s.cfg.Dispute.GuardianAddress,
-		ProofMaturityDelaySeconds:       s.cfg.Dispute.ProofMaturityDelaySeconds,
-		DisputeGameFinalityDelaySeconds: s.cfg.Dispute.DisputeGameFinalityDelaySeconds,
-		DisputeGameInitBond:             s.cfg.Dispute.DisputeGameInitBond,
+		NetworkName:     s.cfg.Dispute.NetworkName,
+		RpcURL:          s.cfg.L1ElURL,
+		ChainID:         s.cfg.L1ChainID,
+		ExplorerURL:     s.cfg.Dispute.ExplorerURL,
+		ExplorerAPIURL:  s.cfg.Dispute.ExplorerAPIURL,
+		VerifierAddress: s.cfg.Dispute.VerifierAddress,
+		OwnerAddress:    s.cfg.Dispute.OwnerAddress,
+		ProposerAddress: s.cfg.Dispute.ProposerAddress,
+		AggregationVkey: s.cfg.Dispute.AggregationVkey,
+		DeployerAddress: s.cfg.Wallet.Address,
 	}
 
 	outputPath := filepath.Join(s.contractsDir, "networks.toml")
