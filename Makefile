@@ -134,6 +134,10 @@ clean-l2-full: clean-l2 ## Full L2 cleanup including Docker images
 run-l2-compile: build ## Compile L2 contracts
 	${BINARY_PATH} l2 compile
 
+.PHONY: run-l2-frontend-env
+run-l2-frontend-env: build ## Regenerate frontend/.env from config + deployed L2 contract addresses
+	${BINARY_PATH} l2 frontend-env
+
 .PHONY: run-frontend
 run-frontend: ## Start Ethera Labs Console (cd frontend && bun run dev)
 	@cd frontend && bun run dev
