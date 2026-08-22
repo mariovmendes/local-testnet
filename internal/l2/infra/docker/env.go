@@ -236,6 +236,12 @@ func (b *EnvBuilder) MergePostDeployEnv(env map[string]string) {
 	if mb := b.readUniversalBridgeMailboxAddress(configs.L2ChainNameRollupB); mb != "" {
 		env["MAILBOX_B"] = mb
 	}
+	if ba := b.readContractAddress(configs.L2ChainNameRollupA, "ComposeL2ToL2Bridge"); ba != "" {
+		env["L2_BRIDGE_A"] = ba
+	}
+	if bb := b.readContractAddress(configs.L2ChainNameRollupB, "ComposeL2ToL2Bridge"); bb != "" {
+		env["L2_BRIDGE_B"] = bb
+	}
 	if ep := b.readContractAddress(configs.L2ChainNameRollupA, "EntryPoint"); ep != "" {
 		env["ENTRYPOINT_A"] = ep
 	}
