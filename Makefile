@@ -138,6 +138,10 @@ run-l2-compile: build ## Compile L2 contracts
 run-l2-frontend-env: build ## Regenerate frontend/.env from config + deployed L2 contract addresses
 	${BINARY_PATH} l2 frontend-env
 
+.PHONY: scripts
+scripts: ## Sync hardcoded contract addresses in scripts/javascript/*.js from deployed contracts.json
+	cd scripts/javascript && node update-addresses.js
+
 .PHONY: run-frontend
 run-frontend: ## Start Ethera Labs Console (cd frontend && bun run dev)
 	@cd frontend && bun run dev

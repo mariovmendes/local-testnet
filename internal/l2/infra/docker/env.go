@@ -9,9 +9,10 @@ import (
 	"strings"
 
 	"github.com/ethera-labs/local-testnet/configs"
+	"github.com/ethera-labs/local-testnet/internal/l2/l2config/crypto"
 	"github.com/ethera-labs/local-testnet/internal/l2/path"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
+	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 )
 
 // EnvBuilder constructs environment variables for docker-compose operations.
@@ -74,6 +75,15 @@ func (b *EnvBuilder) BuildComposeEnv(cfg configs.L2, gameFactoryAddr common.Addr
 	env["COORDINATOR_PRIVATE_KEY"] = cfg.CoordinatorPrivateKey
 	env["SEQUENCER_PRIVATE_KEY"] = cfg.CoordinatorPrivateKey
 	env["SP_L1_SUPERBLOCK_CONTRACT"] = composeL2OOAddr.Hex()
+
+	// op-rbuilder's --ethera.coordinator-address must match the coordinator key the
+	// sidecar signs putInbox/ack/confirm/abort transactions with, so it's derived
+	// from the same CoordinatorPrivateKey rather than configured separately.
+	coordinatorAddress, err := crypto.AddressFromPrivateKey(cfg.CoordinatorPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive coordinator address: %w", err)
+	}
+	env["ETHERA_COORDINATOR_ADDRESS"] = coordinatorAddress
 
 	env["PUBLISHER_PATH"] = publisherPath
 
@@ -300,11 +310,11 @@ func (b *EnvBuilder) readContractAddress(chainName configs.L2ChainName, contract
 // URL format respectively.
 func derivePeerKeys(secretHex string) (string, string, error) {
 	sk := strings.TrimPrefix(secretHex, "0x")
-	priv, err := crypto.HexToECDSA(sk)
+	priv, err := gethcrypto.HexToECDSA(sk)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid secret: %w", err)
 	}
-	pub := crypto.FromECDSAPub(&priv.PublicKey) // 65 bytes: 0x04 || X || Y
+	pub := gethcrypto.FromECDSAPub(&priv.PublicKey) // 65 bytes: 0x04 || X || Y
 	return sk, hex.EncodeToString(pub[1:]), nil
 }
 

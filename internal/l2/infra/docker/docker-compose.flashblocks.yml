@@ -63,6 +63,7 @@ services:
       - --nat=none
       - --trusted-only
       - --trusted-peers=enode://${VALIDATOR_EL_A_ENODE_PUBKEY}@validator-el-a:30303
+      - --ethera.coordinator-address=${ETHERA_COORDINATOR_ADDRESS}
 
   # Block builder for Chain B
   op-rbuilder-b:
@@ -109,6 +110,7 @@ services:
       - --nat=none
       - --trusted-only
       - --trusted-peers=enode://${VALIDATOR_EL_B_ENODE_PUBKEY}@validator-el-b:30303
+      - --ethera.coordinator-address=${ETHERA_COORDINATOR_ADDRESS}
 
   # Multiplexer for Chain A - routes between op-reth (fallback) and op-rbuilder (builder)
   rollup-boost-a:
