@@ -136,9 +136,9 @@ func generateBlockscoutConfig(cfg configs.L2, deploymentState l1deployment.Deplo
 		var hostName string
 		switch chainName {
 		case configs.L2ChainNameRollupA:
-			hostName = "op-reth-a"
+			hostName = "validator-el-a"
 		case configs.L2ChainNameRollupB:
-			hostName = "op-reth-b"
+			hostName = "validator-el-b"
 		default:
 			return nil, fmt.Errorf("unknown chain name: %s", chainName)
 		}
@@ -176,6 +176,10 @@ func (s *Service) cloneRepositories(ctx context.Context, cfg configs.L2) error {
 		}
 		if name == configs.RepositoryNameOPSuccinct && !cfg.OPSuccinct.Enabled {
 			s.logger.With("name", name).Info("ignoring op-succinct repository config because op-succinct mode is disabled")
+			continue
+		}
+		if (name == configs.RepositoryNameBundler || name == configs.RepositoryNameAccountAbstraction) && !cfg.Bundler.Enabled {
+			s.logger.With("name", name).Info("ignoring bundler repository config because bundler mode is disabled")
 			continue
 		}
 

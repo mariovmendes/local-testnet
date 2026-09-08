@@ -43,8 +43,18 @@ const ETH_LIQUIDITY_ABI = [
 
 const providerCache = new Map<string, ethers.JsonRpcProvider>()
 
+function resolveRpcUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) {
+    return url
+  }
+  if (typeof window !== 'undefined') {
+    return new URL(url, window.location.origin).toString()
+  }
+  return url
+}
+
 export function getProvider(chain: 'A' | 'B'): ethers.JsonRpcProvider {
-  const url = chain === 'A' ? CHAIN_A_RPC : CHAIN_B_RPC
+  const url = resolveRpcUrl(chain === 'A' ? CHAIN_A_RPC : CHAIN_B_RPC)
   let provider = providerCache.get(url)
   if (!provider) {
     provider = new ethers.JsonRpcProvider(url)

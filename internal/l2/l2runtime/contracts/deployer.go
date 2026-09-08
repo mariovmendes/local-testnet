@@ -300,12 +300,17 @@ func (d *Deployer) deployToChain(ctx context.Context, rpcURL, coordinatorPrivate
 	addresses[ContractNameUniversalBridgeMailbox] = ubMailboxAddr.Hex()
 	d.logger.Info("deployed", "contract", ContractNameUniversalBridgeMailbox, "address", ubMailboxAddr.Hex())
 
-	cetFactoryAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameCetFactory], coordinatorAddr)
+	cetFactoryAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameCetFactory])
 	if err != nil {
 		return nil, fmt.Errorf("failed to deploy CetFactory: %w", err)
 	}
 	addresses[ContractNameCetFactory] = cetFactoryAddr.Hex()
 	d.logger.Info("deployed", "contract", ContractNameCetFactory, "address", cetFactoryAddr.Hex())
+
+	if err := d.callInitialize(ctx, client, privateKey, chainID, contracts[ContractNameCetFactory], cetFactoryAddr, coordinatorAddr); err != nil {
+		return nil, fmt.Errorf("failed to initialize CetFactory: %w", err)
+	}
+	d.logger.Info("initialize called", "contract", ContractNameCetFactory)
 
 	ethLiquidityAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameComposeETHLiquidity], coordinatorAddr)
 	if err != nil {
@@ -314,7 +319,7 @@ func (d *Deployer) deployToChain(ctx context.Context, rpcURL, coordinatorPrivate
 	addresses[ContractNameComposeETHLiquidity] = ethLiquidityAddr.Hex()
 	d.logger.Info("deployed", "contract", ContractNameComposeETHLiquidity, "address", ethLiquidityAddr.Hex())
 
-	bridgeAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameComposeL2ToL2Bridge], ubMailboxAddr, cetFactoryAddr, ethLiquidityAddr)
+	bridgeAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameComposeL2ToL2Bridge], ubMailboxAddr, cetFactoryAddr, ethLiquidityAddr, coordinatorAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deploy ComposeL2ToL2Bridge: %w", err)
 	}
@@ -344,6 +349,43 @@ func (d *Deployer) deployToChain(ctx context.Context, rpcURL, coordinatorPrivate
 	d.logger.Info("deployed", "contract", ContractNameTestToken, "address", testTokenAddr.Hex())
 
 	return addresses, nil
+}
+
+// callInitialize calls CetFactory's one-shot post-deploy initializer, which
+// must run before authorizeBridge will accept a caller (CetFactory's
+// constructor no longer takes the deployer address directly).
+func (d *Deployer) callInitialize(ctx context.Context, client *ethclient.Client, privateKey *ecdsa.PrivateKey, chainID *big.Int, contract CompiledContract, contractAddr, deployerAddr common.Address) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute*3)
+	defer cancel()
+
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
+	if err != nil {
+		return fmt.Errorf("failed to create transactor: %w", err)
+	}
+
+	gasPrice, err := client.SuggestGasPrice(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get gas price: %w", err)
+	}
+	auth.Context = ctx
+	auth.GasLimit = uint64(500_000)
+	auth.GasPrice = gasPrice
+
+	boundContract := bind.NewBoundContract(contractAddr, contract.ABI, client, client, client)
+	tx, err := boundContract.Transact(auth, "initialize", deployerAddr)
+	if err != nil {
+		return fmt.Errorf("failed to call initialize: %w", err)
+	}
+
+	receipt, err := bind.WaitMined(ctx, client, tx)
+	if err != nil {
+		return fmt.Errorf("failed to wait for initialize tx: %w", err)
+	}
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return fmt.Errorf("initialize tx failed with status %d", receipt.Status)
+	}
+
+	return nil
 }
 
 func (d *Deployer) callAuthorize(ctx context.Context, client *ethclient.Client, privateKey *ecdsa.PrivateKey, chainID *big.Int, contract CompiledContract, contractAddr, bridgeAddr common.Address) error {

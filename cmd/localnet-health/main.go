@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -116,10 +117,24 @@ func (p *prober) probe(ctx context.Context) []serviceStatus {
 			callCtx, cancel := context.WithTimeout(ctx, dockerCallTimeout)
 			defer cancel()
 
-			out[idx] = serviceStatus{
-				serviceSpec: s,
-				Status:      p.resolveStatus(callCtx, s.ContainerName),
+			status, image := p.resolveStatus(callCtx, s.ContainerName)
+			// The op-besu overlay reuses the op-reth slot (same rollup-boost
+			// L2_URL wiring) but renames the container to op-besu-{a,b} and runs
+			// a besu image. If op-reth-{a,b} is absent, fall back to the op-besu
+			// container name so the console still shows it as up.
+			if s.Kind == "op-reth" && status == "missing" {
+				if alt := opBesuContainerName(s.ContainerName); alt != "" {
+					status, image = p.resolveStatus(callCtx, alt)
+				}
 			}
+			// Relabel the EL slot when it is actually running op-besu, so the
+			// console and /api/services report the true execution client.
+			if s.Kind == "op-reth" && isBesuImage(image) {
+				s.Kind = "op-besu"
+				s.Name = "op-besu " + strings.TrimPrefix(s.Name, "op-reth ")
+			}
+
+			out[idx] = serviceStatus{serviceSpec: s, Status: status}
 		}(i, spec)
 	}
 	wg.Wait()
@@ -127,16 +142,35 @@ func (p *prober) probe(ctx context.Context) []serviceStatus {
 	return out
 }
 
-func (p *prober) resolveStatus(ctx context.Context, name string) string {
+// opBesuContainerName maps an op-reth EL container name to its op-besu overlay
+// equivalent (op-reth-a -> op-besu-a). Returns "" for non-EL names.
+func opBesuContainerName(opRethName string) string {
+	if suffix, ok := strings.CutPrefix(opRethName, "op-reth-"); ok {
+		return "op-besu-" + suffix
+	}
+	return ""
+}
+
+func isBesuImage(image string) bool {
+	return strings.Contains(strings.ToLower(image), "besu")
+}
+
+// resolveStatus inspects a container and returns its status plus the image it
+// runs (empty when the container is missing or inspection fails).
+func (p *prober) resolveStatus(ctx context.Context, name string) (status, image string) {
 	info, err := p.cli.ContainerInspect(ctx, name)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return "missing"
+			return "missing", ""
 		}
 		p.logger.With("container", name, "err", err.Error()).Debug("container inspect failed")
-		return "down"
+		return "down", ""
 	}
-	return statusFromState(info.State)
+	image = ""
+	if info.Config != nil {
+		image = info.Config.Image
+	}
+	return statusFromState(info.State), image
 }
 
 func statusFromState(state *container.State) string {

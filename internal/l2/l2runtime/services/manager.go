@@ -20,12 +20,14 @@ type Manager struct {
 	frontendDevDockerFilePath string
 	altDADockerFilePath       string
 	opSuccinctDockerFilePath  string
+	opBesuDockerFilePath      string
 	flashblocksEnabled        bool
 	sidecarEnabled            bool
 	bundlerEnabled            bool
 	frontendEnabled           bool
 	altDAEnabled              bool
 	opSuccinctEnabled         bool
+	opBesuEnabled             bool
 	logger                    *slog.Logger
 }
 
@@ -42,6 +44,13 @@ func NewManager(rootDir, dockerFilePath string) *Manager {
 func (m *Manager) WithFlashblocks(flashblocksDockerFilePath string) *Manager {
 	m.flashblocksDockerFilePath = flashblocksDockerFilePath
 	m.flashblocksEnabled = true
+	return m
+}
+
+// WithOpBesu replaces the op-reth validator EL with op-besu via the given overlay file.
+func (m *Manager) WithOpBesu(opBesuDockerFilePath string) *Manager {
+	m.opBesuDockerFilePath = opBesuDockerFilePath
+	m.opBesuEnabled = true
 	return m
 }
 
@@ -88,11 +97,17 @@ func (m *Manager) StartAll(ctx context.Context, env map[string]string) error {
 	services := []string{
 		"localnet-health",
 		"publisher",
-		"op-reth-a",
-		"op-reth-b",
+		"validator-el-a",
+		"validator-el-b",
 	}
 
 	dockerFiles := []string{m.dockerFilePath}
+
+	// op-besu override must come right after the base file so it replaces the
+	// validator-el-a/validator-el-b service definitions (no other overlay touches them).
+	if m.opBesuEnabled && m.opBesuDockerFilePath != "" {
+		dockerFiles = append(dockerFiles, m.opBesuDockerFilePath)
+	}
 
 	if m.altDAEnabled && m.altDADockerFilePath != "" {
 		dockerFiles = append(dockerFiles, m.altDADockerFilePath)

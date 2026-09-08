@@ -134,6 +134,7 @@ function EthLiquidityPanel({ seeding, setSeeding, setError }: EthLiquidityPanelP
 
 type Direction = 'a_to_b' | 'b_to_a'
 type Asset = 'erc20' | 'eth'
+const ETH_BRIDGE_SOURCE_GAS_LIMIT = 900000n
 
 export default function BridgeForm({ onSubmit, onSelectFlow }: BridgeFormProps) {
   const [amount, setAmount] = useState('')
@@ -175,9 +176,32 @@ export default function BridgeForm({ onSubmit, onSelectFlow }: BridgeFormProps) 
       const providerB = getProvider('B')
 
       if (asset === 'eth') {
+        const source = direction === 'a_to_b' ? 'A' : 'B'
+        const sourceProvider = source === 'A' ? providerA : providerB
+        const sourceSender = source === 'A' ? senderA : senderB
+        const sourceBalance = await sourceProvider.getBalance(sourceSender)
+        const needed = parsedAmount * BigInt(repeat)
+        const feeData = await sourceProvider.getFeeData()
+        const gasPrice =
+          feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n
+        const gasBudget =
+          gasPrice * ETH_BRIDGE_SOURCE_GAS_LIMIT * BigInt(repeat)
+        const totalNeeded = needed + gasBudget
+
+        if (sourceBalance < totalNeeded) {
+          const maxBridgeable =
+            sourceBalance > gasBudget ? sourceBalance - gasBudget : 0n
+          throw new Error(
+            `Wallet on chain ${source} holds ${ethers.formatEther(sourceBalance)} ETH, but ${
+              ethers.formatEther(totalNeeded)
+            } ETH is needed for ${repeat} bridgeEthTo tx(s). Try ${
+              ethers.formatEther(maxBridgeable)
+            } ETH or fund the demo wallet.`
+          )
+        }
+
         const destBridge = direction === 'a_to_b' ? 'B' : 'A'
         const destBalance = await getEthLiquidityBalance(destBridge)
-        const needed = parsedAmount * BigInt(repeat)
         if (destBalance < needed) {
           throw new Error(
             `ETH liquidity pool ${destBridge} holds ${ethers.formatEther(destBalance)} ETH but ${

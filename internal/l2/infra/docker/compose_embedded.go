@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-//go:embed docker-compose.yml docker-compose.flashblocks.yml docker-compose.sidecar.yml docker-compose.bundler.yml docker-compose.frontend.yml docker-compose.frontend.dev.yml docker-compose.altda.yml docker-compose.opsuccinct.yml
+//go:embed docker-compose.yml docker-compose.flashblocks.yml docker-compose.sidecar.yml docker-compose.bundler.yml docker-compose.frontend.yml docker-compose.frontend.dev.yml docker-compose.altda.yml docker-compose.opsuccinct.yml docker-compose.opbesu.yml
 var embeddedComposeFS embed.FS
 
 const (
@@ -19,6 +19,7 @@ const (
 	composeFrontendDevFileName = "docker-compose.frontend.dev.yml"
 	composeAltDAFileName       = "docker-compose.altda.yml"
 	composeOPSuccinctFileName  = "docker-compose.opsuccinct.yml"
+	composeOpBesuFileName      = "docker-compose.opbesu.yml"
 )
 
 // ensureEmbeddedFile writes the named embedded compose file to localnetDir and returns its path.
@@ -78,4 +79,9 @@ func EnsureAltDAComposeFile(localnetDir string) (string, error) {
 // EnsureOPSuccinctComposeFile writes the embedded docker-compose.opsuccinct.yml to localnetDir and returns its path.
 func EnsureOPSuccinctComposeFile(localnetDir string) (string, error) {
 	return ensureEmbeddedFile(localnetDir, composeOPSuccinctFileName)
+}
+
+// EnsureOpBesuComposeFile writes the embedded docker-compose.opbesu.yml to localnetDir and returns its path.
+func EnsureOpBesuComposeFile(localnetDir string) (string, error) {
+	return ensureEmbeddedFile(localnetDir, composeOpBesuFileName)
 }

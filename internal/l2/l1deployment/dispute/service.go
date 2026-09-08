@@ -23,7 +23,7 @@ var templatesFS embed.FS
 // Service handles dispute game factory deployment
 type Service struct {
 	rootDir      string
-	contractsDir string // Path to L1-settlement subdir of the ethera-contracts repo (cloned or local)
+	contractsDir string // Path to the ethera-contracts repo root (cloned or local)
 	deployerPK   string
 	cfg          configs.L2
 	logger       *slog.Logger
@@ -35,7 +35,7 @@ type Service struct {
 func NewService(rootDir, etheraContractsDir string, cfg configs.L2) *Service {
 	return &Service{
 		rootDir:      rootDir,
-		contractsDir: filepath.Join(etheraContractsDir, "L1-settlement"),
+		contractsDir: etheraContractsDir,
 		deployerPK:   cfg.Wallet.PrivateKey,
 		cfg:          cfg,
 		logger:       logger.Named("dispute_deployer"),
@@ -47,18 +47,30 @@ type DeploymentContracts struct {
 	ComposeL2OutputOracleAddress common.Address
 }
 
-// Deploy executes the dispute-contract deployment workflow and returns the
-// deployed L1 contract addresses localnet needs in later phases.
+// Deploy executes the "Phase 1: Deploy Shared Infrastructure" workflow
+// (justfile `l1-deploy-shared`) against the ethera-contracts repository and
+// returns the deployed L1 contract addresses localnet needs in later phases.
+//
+// Unlike the legacy L1-settlement workflow, l1-deploy-shared deploys the
+// shared dispute-game infrastructure once (not per-network) and has no
+// equivalent of the old ComposeL2OutputOracle contract - only
+// DisputeGameFactoryAddress is populated. ComposeL2OutputOracleAddress is
+// always the zero address; callers that need it (op-succinct) must be
+// disabled until the contracts repo grows a replacement.
 func (s *Service) Deploy(ctx context.Context) (DeploymentContracts, error) {
 	s.logger.Info("starting dispute contracts deployment")
 
 	if _, err := os.Stat(s.contractsDir); os.IsNotExist(err) {
-		return DeploymentContracts{}, fmt.Errorf("L1-settlement directory not found at %s. Make sure ethera-contracts repository is cloned first", s.contractsDir)
+		return DeploymentContracts{}, fmt.Errorf("ethera-contracts directory not found at %s. Make sure the repository is cloned first", s.contractsDir)
 	}
 
-	s.logger.Info("generating networks.toml")
-	if err := s.generateNetworksToml(); err != nil {
-		return DeploymentContracts{}, fmt.Errorf("failed to generate networks.toml: %w", err)
+	if s.cfg.OPSuccinct.Enabled {
+		return DeploymentContracts{}, fmt.Errorf("l2.op-succinct.enabled requires a ComposeL2OutputOracle address, which the current ethera-contracts l1-deploy-shared workflow does not produce")
+	}
+
+	s.logger.Info("updating config.json [l1] with shared-infra deployment inputs")
+	if err := s.writeComposeConfig(); err != nil {
+		return DeploymentContracts{}, fmt.Errorf("failed to update config.json: %w", err)
 	}
 
 	s.logger.Info("generating .env file")
@@ -66,22 +78,17 @@ func (s *Service) Deploy(ctx context.Context) (DeploymentContracts, error) {
 		return DeploymentContracts{}, fmt.Errorf("failed to generate .env file: %w", err)
 	}
 
-	s.logger.Info("running just setup")
-	if err := s.runJustCommand(ctx, "setup"); err != nil {
-		return DeploymentContracts{}, fmt.Errorf("failed to run just setup: %w", err)
+	s.logger.Info("installing forge dependencies")
+	if err := s.runForgeCommand(ctx, "install"); err != nil {
+		return DeploymentContracts{}, fmt.Errorf("failed to install forge dependencies: %w", err)
 	}
 
-	s.logger.Info("running just build")
-	if err := s.runJustCommand(ctx, "build"); err != nil {
-		return DeploymentContracts{}, fmt.Errorf("failed to run just build: %w", err)
+	s.logger.Info("deploying shared L1 infrastructure")
+	if err := s.deploySharedInfra(ctx); err != nil {
+		return DeploymentContracts{}, fmt.Errorf("failed to deploy shared L1 infrastructure: %w", err)
 	}
 
-	s.logger.Info("running just deploy")
-	if err := s.runJustCommand(ctx, "deploy-network", s.cfg.Dispute.NetworkName); err != nil {
-		return DeploymentContracts{}, fmt.Errorf("failed to deploy network '%s': %w", s.cfg.Dispute.NetworkName, err)
-	}
-
-	s.logger.Info("parsing deployments.json")
+	s.logger.Info("parsing config.json [l1.deployed]")
 	contracts, err := s.parseDeploymentContracts()
 	if err != nil {
 		return DeploymentContracts{}, fmt.Errorf("failed to parse deployment contracts: %w", err)
@@ -89,65 +96,83 @@ func (s *Service) Deploy(ctx context.Context) (DeploymentContracts, error) {
 
 	s.logger.With(
 		"dispute_game_factory", contracts.DisputeGameFactoryAddress,
-		"compose_l2_output_oracle", contracts.ComposeL2OutputOracleAddress,
 	).Info("dispute contracts deployed successfully")
 
 	return contracts, nil
 }
 
-// generateNetworksToml creates networks.toml from template and config
-func (s *Service) generateNetworksToml() error {
-	tmplContent, err := templatesFS.ReadFile("networks.tmpl")
+// composeL1Config mirrors the `l1` object in ethera-contracts' config.json
+// (see script/l1/libraries/ComposeConfig.sol). Deployed is round-tripped
+// untouched: it's written by the forge script itself when
+// SAVE_DEPLOY_OUTPUT=true and must remain a valid (if placeholder) object
+// for vm.writeJson to populate.
+type composeL1Config struct {
+	Guardian                        string          `json:"guardian"`
+	ProxyAdminOwner                 string          `json:"proxyAdminOwner"`
+	DefaultAdmin                    string          `json:"defaultAdmin"`
+	DepositWhitelistAdmin           string          `json:"depositWhitelistAdmin"`
+	AuthorizedProposer              string          `json:"authorizedProposer"`
+	SP1Verifier                     string          `json:"sp1Verifier"`
+	AggregationVkey                 string          `json:"aggregationVkey"`
+	ProofMaturityDelaySeconds       int             `json:"proofMaturityDelaySeconds"`
+	DisputeGameFinalityDelaySeconds int             `json:"disputeGameFinalityDelaySeconds"`
+	DisputeGameInitBond             string          `json:"disputeGameInitBond"`
+	Deployed                        json.RawMessage `json:"deployed"`
+}
+
+type composeDeployed struct {
+	DisputeGameFactory string `json:"disputeGameFactory"`
+}
+
+// writeComposeConfig fills in config.json's `l1` static deployment inputs
+// from l2.dispute, leaving `rollups` and `l1.deployed` untouched.
+func (s *Service) writeComposeConfig() error {
+	configPath := filepath.Join(s.contractsDir, "config.json")
+
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to read template file: %w", err)
+		return fmt.Errorf("failed to read config.json: %w", err)
 	}
 
-	tmpl, err := template.New("networks").Parse(string(tmplContent))
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("failed to parse config.json: %w", err)
+	}
+
+	var l1 composeL1Config
+	if l1Raw, ok := doc["l1"]; ok {
+		if err := json.Unmarshal(l1Raw, &l1); err != nil {
+			return fmt.Errorf("failed to parse config.json [l1]: %w", err)
+		}
+	}
+
+	l1.Guardian = s.cfg.Dispute.GuardianAddress
+	l1.ProxyAdminOwner = s.cfg.Dispute.OwnerAddress
+	l1.DefaultAdmin = s.cfg.Dispute.OwnerAddress
+	l1.DepositWhitelistAdmin = s.cfg.Dispute.OwnerAddress
+	l1.AuthorizedProposer = s.cfg.Dispute.ProposerAddress
+	l1.SP1Verifier = s.cfg.Dispute.VerifierAddress
+	l1.AggregationVkey = s.cfg.Dispute.AggregationVkey
+	l1.ProofMaturityDelaySeconds = s.cfg.Dispute.ProofMaturityDelaySeconds
+	l1.DisputeGameFinalityDelaySeconds = s.cfg.Dispute.DisputeGameFinalityDelaySeconds
+	l1.DisputeGameInitBond = s.cfg.Dispute.DisputeGameInitBond
+	if len(l1.Deployed) == 0 {
+		l1.Deployed = json.RawMessage("{}")
+	}
+
+	l1Bytes, err := json.Marshal(l1)
 	if err != nil {
-		return fmt.Errorf("failed to parse template: %w", err)
+		return fmt.Errorf("failed to marshal config.json [l1]: %w", err)
 	}
+	doc["l1"] = l1Bytes
 
-	type templateData struct {
-		NetworkName                     string
-		RpcURL                          string
-		ChainID                         int
-		ExplorerURL                     string
-		ExplorerAPIURL                  string
-		VerifierAddress                 string
-		OwnerAddress                    string
-		ProposerAddress                 string
-		AggregationVkey                 string
-		GuardianAddress                 string
-		ProofMaturityDelaySeconds       int
-		DisputeGameFinalityDelaySeconds int
-		DisputeGameInitBond             string
-	}
-
-	data := templateData{
-		NetworkName:                     s.cfg.Dispute.NetworkName,
-		RpcURL:                          s.cfg.L1ElURL,
-		ChainID:                         s.cfg.L1ChainID,
-		ExplorerURL:                     s.cfg.Dispute.ExplorerURL,
-		ExplorerAPIURL:                  s.cfg.Dispute.ExplorerAPIURL,
-		VerifierAddress:                 s.cfg.Dispute.VerifierAddress,
-		OwnerAddress:                    s.cfg.Dispute.OwnerAddress,
-		ProposerAddress:                 s.cfg.Dispute.ProposerAddress,
-		AggregationVkey:                 s.cfg.Dispute.AggregationVkey,
-		GuardianAddress:                 s.cfg.Dispute.GuardianAddress,
-		ProofMaturityDelaySeconds:       s.cfg.Dispute.ProofMaturityDelaySeconds,
-		DisputeGameFinalityDelaySeconds: s.cfg.Dispute.DisputeGameFinalityDelaySeconds,
-		DisputeGameInitBond:             s.cfg.Dispute.DisputeGameInitBond,
-	}
-
-	outputPath := filepath.Join(s.contractsDir, "networks.toml")
-	file, err := os.Create(outputPath)
+	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to create networks.toml: %w", err)
+		return fmt.Errorf("failed to marshal config.json: %w", err)
 	}
-	defer file.Close()
 
-	if err := tmpl.Execute(file, data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
+	if err := os.WriteFile(configPath, out, 0644); err != nil {
+		return fmt.Errorf("failed to write config.json: %w", err)
 	}
 
 	return nil
@@ -166,9 +191,17 @@ func (s *Service) generateEnvFile() error {
 	}
 
 	data := struct {
-		DeployerPrivateKey string
+		ProxyAdminOwnerKey string
+		GuardianKey        string
+		RPCURL             string
 	}{
-		DeployerPrivateKey: s.deployerPK,
+		// proxyAdminOwner and guardian are both configured to the same
+		// deployer wallet address (l2.dispute.owner-address /
+		// l2.dispute.guardian-address); there's no separate key material
+		// for them.
+		ProxyAdminOwnerKey: s.deployerPK,
+		GuardianKey:        s.deployerPK,
+		RPCURL:             s.cfg.L1ElURL,
 	}
 
 	envPath := filepath.Join(s.contractsDir, ".env")
@@ -189,85 +222,81 @@ func (s *Service) generateEnvFile() error {
 	return nil
 }
 
-// runJustCommand executes a just command in the contracts directory
-func (s *Service) runJustCommand(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "just", args...)
+// deploySharedInfra runs DeploySharedInfra.s.sol directly with forge script,
+// rather than via `just l1-deploy-shared`. The justfile recipe omits --sig,
+// and DeploySharedInfra declares both run() and run(DeploySharedInfraInput),
+// which forge refuses to disambiguate on its own ("Multiple functions with
+// the same name `run` found in the ABI").
+func (s *Service) deploySharedInfra(ctx context.Context) error {
+	args := []string{
+		"script", "script/l1/deploy/DeploySharedInfra.s.sol",
+		"--tc", "DeploySharedInfra",
+		"--sig", "run()",
+		"--rpc-url", s.cfg.L1ElURL,
+		"--broadcast",
+		"--slow",
+	}
+
+	cmd := exec.CommandContext(ctx, "forge", args...)
 	cmd.Dir = s.contractsDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		"SAVE_DEPLOY_OUTPUT=true",
+		"PROXY_ADMIN_OWNER_KEY="+s.deployerPK,
+		"GUARDIAN_KEY="+s.deployerPK,
+	)
 
 	s.logger.
-		With("command", fmt.Sprintf("just %s", strings.Join(args, " "))).
+		With("command", "forge "+strings.Join(args, " ")).
 		With("working_dir", s.contractsDir).
-		Info("executing just command")
+		Info("executing forge script")
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("command 'just %s' failed in directory %s: %w", strings.Join(args, " "), s.contractsDir, err)
+		return fmt.Errorf("forge script DeploySharedInfra failed in directory %s: %w", s.contractsDir, err)
 	}
 
 	return nil
 }
 
-// parseDeploymentContracts reads the contract deployment outputs produced by
-// ethera-contracts and extracts the proxy addresses localnet needs later.
+// runForgeCommand executes a forge command in the contracts directory
+func (s *Service) runForgeCommand(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "forge", args...)
+	cmd.Dir = s.contractsDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("command 'forge %s' failed in directory %s: %w", strings.Join(args, " "), s.contractsDir, err)
+	}
+
+	return nil
+}
+
+// parseDeploymentContracts reads the addresses DeploySharedInfra wrote into
+// config.json's l1.deployed section.
 func (s *Service) parseDeploymentContracts() (DeploymentContracts, error) {
-	deploymentsPath := filepath.Join(s.contractsDir, "deployments.json")
+	configPath := filepath.Join(s.contractsDir, "config.json")
 
-	if data, err := os.ReadFile(deploymentsPath); err == nil {
-		var deployments map[string]struct {
-			ComposeL2OutputOracle struct {
-				Proxy string `json:"proxy"`
-			} `json:"ComposeL2OutputOracle"`
-			DisputeGameFactory struct {
-				Proxy string `json:"proxy"`
-			} `json:"DisputeGameFactory"`
-		}
-
-		if err := json.Unmarshal(data, &deployments); err == nil {
-			if network, ok := deployments[s.cfg.Dispute.NetworkName]; ok {
-				if network.DisputeGameFactory.Proxy == "" {
-					return DeploymentContracts{}, fmt.Errorf("DisputeGameFactory proxy address is empty")
-				}
-				return DeploymentContracts{
-					DisputeGameFactoryAddress:    common.HexToAddress(network.DisputeGameFactory.Proxy),
-					ComposeL2OutputOracleAddress: common.HexToAddress(network.ComposeL2OutputOracle.Proxy),
-				}, nil
-			}
-		}
-	}
-
-	// Fallback to ethera deployment layout: deployments/ethera/<network>.json
-	etheraPath := filepath.Join(s.contractsDir, "deployments", "compose", s.cfg.Dispute.NetworkName+".json")
-	data, err := os.ReadFile(etheraPath)
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		return DeploymentContracts{}, fmt.Errorf("failed to read deployments.json or compose deployments: %w", err)
+		return DeploymentContracts{}, fmt.Errorf("failed to read config.json: %w", err)
 	}
 
-	var etheraDeployments map[string]struct {
-		Contracts struct {
-			ComposeL2OutputOracle struct {
-				ProxyAddress string `json:"proxyAddress"`
-			} `json:"ComposeL2OutputOracle"`
-			DisputeGameFactory struct {
-				ProxyAddress string `json:"proxyAddress"`
-			} `json:"DisputeGameFactory"`
-		} `json:"contracts"`
+	var doc struct {
+		L1 struct {
+			Deployed composeDeployed `json:"deployed"`
+		} `json:"l1"`
 	}
-	if err := json.Unmarshal(data, &etheraDeployments); err != nil {
-		return DeploymentContracts{}, fmt.Errorf("failed to parse compose deployments file: %w", err)
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return DeploymentContracts{}, fmt.Errorf("failed to parse config.json: %w", err)
 	}
 
-	network, ok := etheraDeployments[s.cfg.Dispute.NetworkName]
-	if !ok {
-		return DeploymentContracts{}, fmt.Errorf("%s deployment not found in compose deployments file", s.cfg.Dispute.NetworkName)
-	}
-
-	if network.Contracts.DisputeGameFactory.ProxyAddress == "" {
-		return DeploymentContracts{}, fmt.Errorf("DisputeGameFactory proxy address is empty")
+	if doc.L1.Deployed.DisputeGameFactory == "" || common.HexToAddress(doc.L1.Deployed.DisputeGameFactory) == (common.Address{}) {
+		return DeploymentContracts{}, fmt.Errorf("l1.deployed.disputeGameFactory is empty in config.json")
 	}
 
 	return DeploymentContracts{
-		DisputeGameFactoryAddress:    common.HexToAddress(network.Contracts.DisputeGameFactory.ProxyAddress),
-		ComposeL2OutputOracleAddress: common.HexToAddress(network.Contracts.ComposeL2OutputOracle.ProxyAddress),
+		DisputeGameFactoryAddress: common.HexToAddress(doc.L1.Deployed.DisputeGameFactory),
 	}, nil
 }
