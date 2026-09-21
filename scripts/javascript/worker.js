@@ -41,7 +41,7 @@ function makeProvider(url) {
 }
 
 const DEFAULTS = {
-    CHAIN_A_ID: 77777,
+CHAIN_A_ID: 77777,
     CHAIN_B_ID: 88888,
     CHAIN_A_RPC: 'http://127.0.0.1:17545',
     CHAIN_B_RPC: 'http://127.0.0.1:27545',
@@ -53,7 +53,7 @@ const DEFAULTS = {
     CHAIN_B_TOKEN: '0x71C63b81Cb9fBE86D141f413e81b2C97a97eEe33',
     CHAIN_A_ETH_LIQUIDITY: '0xa21aFBbA5C0dc05fbFBC534906862074344D2AA1',
     CHAIN_B_ETH_LIQUIDITY: '0xa21aFBbA5C0dc05fbFBC534906862074344D2AA1',
-    INTERVAL: 400
+    INTERVAL: 100
 }
 
 const ERC20_ABI = [
@@ -72,6 +72,20 @@ const DEFAULT_PRIORITY_FEE = ethers.parseUnits('1', 'gwei')
 // Right-sized gas limits: the builder escrows gas_limit x max_fee per tx
 // when validating affordability, so oversized limits (900k approve / 3M
 // receive) made each round's escrow a large fraction of account funding.
+//
+// Do NOT shrink DEFAULT_RECEIVE_GAS on the strength of a small sample. Its
+// cost is bimodal: over 896 successful receives, p50 was 404,350 and p99 was
+// 404,374 — but the max was 1,505,936, a 3.7x tail that a 116-tx sample taken
+// from three blocks does not show at all. Simulation needs more headroom still:
+// the sidecar rejects the instance (`process_reject reason=receive_reverted`)
+// before submission, and at a 700k limit that rejected 894 of 894 XTs even
+// though p50 execution is 404k. 3M clears both the tail and the simulation.
+//
+// The escrow this sets (`gas_limit x max_fee`) is only dangerous when the
+// basefee runs away; that is fixed at the source in intent.tmpl by putting the
+// EIP-1559 target above sustained demand. At the resulting ~0.04 gwei basefee a
+// 3M limit escrows ~0.004 ETH against a 2 ETH balance, so there is nothing to
+// win by trimming it and a whole run to lose.
 const DEFAULT_APPROVE_GAS = 100_000n
 const DEFAULT_BRIDGE_GAS = 900_000n
 const DEFAULT_RECEIVE_GAS = 3_000_000n
@@ -101,11 +115,29 @@ async function buildReceiveTokens(bridgeAddr, sessionId, chainSrc, chainDest, br
     return signTx(signer, { ...tx, gasLimit: DEFAULT_RECEIVE_GAS }, chainId, nonce)
 }
 
+// ethers' getFeeData returns maxFeePerGas = 2 x basefee + tip. That ceiling is
+// covered by the signature, so it cannot be raised later, and the EVM checks it
+// against the basefee at *execution* time - which for an XT is minutes after
+// signing, not at submission. A 45k-XT run lost 207 instances to exactly this:
+// signed at 0.671 gwei (ceiling ~1.343), refused 3m26s later at a basefee of
+// 1.369 with "gas price is less than basefee", which quarantined the whole
+// instance. Under load the basefee climbs 12.5% per full block, so 2x is one
+// short burst of traffic away from expiring.
+//
+// A real user signing a normal 2x ceiling would still hit this - the protocol
+// cannot re-sign someone else's transaction. The fix here only stops the
+// benchmark from dying of it; handling fee-expired user transactions without
+// quarantining the instance is a separate, deliberate piece of work.
+const FEE_CEILING_MULTIPLIER = 8n
+
 async function signTx(signer, txReq, chainId, nonce) {
     const provider = signer.provider
     const fee = await provider.getFeeData()
     const mpf = fee.maxPriorityFeePerGas ?? DEFAULT_PRIORITY_FEE
-    const mf = fee.maxFeePerGas ?? DEFAULT_MAX_FEE
+    // getFeeData already folded 2x into maxFeePerGas; recover the basefee it
+    // used so the multiplier below is applied to the basefee, not to 2x it.
+    const baseFee = ((fee.maxFeePerGas ?? DEFAULT_MAX_FEE) - mpf) / 2n
+    const mf = baseFee * FEE_CEILING_MULTIPLIER + mpf
     return signer.signTransaction({
         ...txReq,
         chainId: BigInt(chainId),

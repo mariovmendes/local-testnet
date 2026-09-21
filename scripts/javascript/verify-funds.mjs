@@ -13,19 +13,21 @@
 // stranded < 0  => the user received more than they sent: a double-spend bug.
 import { ethers } from 'ethers'
 import fs from 'node:fs'
+import { addresses, cetBalanceOf } from './cet.mjs'
 
 const INITIAL = ethers.parseUnits('10000', 18)
 const UNIT = ethers.parseUnits('1', 18)
-const TOKEN_A = '0x71C63b81Cb9fBE86D141f413e81b2C97a97eEe33'
-const TOKEN_B = '0x91bAb1F05F8e86103DD85aAE4cF80511C35cAB0D' // CET minted on B for the bridged asset
-const BRIDGE = '0x24BF35E5687A67Bf0943599Ff1BF4Ed0E5D22446'
+const TOKEN_A = addresses('rollup-a').MockL2ERC20
+const BRIDGE = addresses('rollup-a').ComposeL2ToL2Bridge
 const ERC20 = ['function balanceOf(address) view returns (uint256)']
 
 const accounts = JSON.parse(fs.readFileSync('accounts.json', 'utf8'))
 const pa = new ethers.JsonRpcProvider('http://127.0.0.1:18545')
 const pb = new ethers.JsonRpcProvider('http://127.0.0.1:28545')
 const ta = new ethers.Contract(TOKEN_A, ERC20, pa)
-const tb = new ethers.Contract(TOKEN_B, ERC20, pb)
+const chainIdA = (await pa.getNetwork()).chainId
+const { cet, balanceOf: cetBal } = await cetBalanceOf(pb, TOKEN_A, chainIdA)
+const tb = { balanceOf: cetBal }
 
 let totalTaken = 0n, totalDelivered = 0n, totalStranded = 0n, totalExcess = 0n
 const strandedAccounts = [], excessAccounts = []
@@ -54,6 +56,7 @@ const asTransfers = v => (v / UNIT).toString()
 
 console.log('\n================ FUND SAFETY AUDIT ================')
 console.log(`accounts audited          : ${accounts.length}`)
+console.log(`CET on B                  : ${cet}`)
 console.log(`tokens taken from users   : ${fmt(totalTaken)}  (${asTransfers(totalTaken)} transfers escrowed & not refunded)`)
 console.log(`tokens delivered on B     : ${fmt(totalDelivered)}  (${asTransfers(totalDelivered)} transfers completed)`)
 console.log('')
