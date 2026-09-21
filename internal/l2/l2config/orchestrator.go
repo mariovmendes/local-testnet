@@ -14,6 +14,7 @@ import (
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/contracts"
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/crypto"
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/genesis"
+	"github.com/ethera-labs/local-testnet/internal/l2/l2config/l1chainconfig"
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/opsuccinct"
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/rollup"
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/runtime"
@@ -62,13 +63,14 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, deploymentSt
 	var (
 		writer = json.NewWriter()
 
-		opDeployer    = deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, dockerClient)
+		opDeployer    = deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, deployer.KurtosisNetworkMode, dockerClient)
 		genesisGen    = genesis.NewGenerator(opDeployer, dockerClient, writer, o.localnetDir, cfg.ImageRef(configs.ImageNameOpReth))
 		rollupGen     = rollup.NewGenerator(json.NewReader(), opDeployer, writer, o.localnetDir)
 		secretsGen    = secrets.NewGenerator(writer)
 		contractsGen  = contracts.NewGenerator(writer)
 		opSuccinctGen = opsuccinct.NewGenerator()
 		runtimeGen    = runtime.NewGenerator()
+		l1ChainCfgGen = l1chainconfig.NewGenerator(dockerClient)
 	)
 
 	for chainName, chainConfig := range cfg.ChainConfigs {
@@ -116,6 +118,10 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, deploymentSt
 
 		if err := contractsGen.GeneratePlaceholders(configPath, chainConfig.ID); err != nil {
 			return fmt.Errorf("failed to generate contract placeholders for chain %d: %w", chainConfig.ID, err)
+		}
+
+		if err := l1ChainCfgGen.Generate(ctx, configPath); err != nil {
+			return fmt.Errorf("failed to generate l1-chainconfig.json for chain %d: %w", chainConfig.ID, err)
 		}
 
 		// TODO: `runtime.env` is passed to the OP Proposer service, so presumably it should take the OP DisputeGameFactoryAddress

@@ -37,11 +37,69 @@ func (c *Compiler) Compile(ctx context.Context, contractNames []string) error {
 
 // CompileEntryPoint compiles ERC-4337 v0.7 EntryPoint + EntryPointSimulations
 // from the configured account-abstraction source tree and writes the result to
-// entrypoint.json. The output includes deployedBytecode for every compiled
-// contract because the bundler needs the runtime bytecode for state-override
-// eth_call simulation.
+// entrypoint.json. The output includes deployedBytecode for every contract
+// because the bundler needs the runtime bytecode for state-override eth_call
+// simulation.
+//
+// The upstream eth-infinitism/account-abstraction repository is a Hardhat
+// project: sources live under contracts/ (not forge's default src/), it has
+// no foundry.toml/remappings, and its @openzeppelin/contracts import resolves
+// via node_modules rather than a forge lib/. ensureForgeProject bootstraps a
+// minimal forge project on top of that checkout so `forge inspect` works.
 func (c *Compiler) CompileEntryPoint(ctx context.Context, contractNames []string) error {
+	if err := c.ensureForgeProject(ctx); err != nil {
+		return fmt.Errorf("failed to set up forge project for EntryPoint compilation: %w", err)
+	}
 	return c.compileTo(ctx, contractNames, entryPointFileName, true)
+}
+
+// openzeppelinContractsVersion pins the @openzeppelin/contracts release used
+// by account-abstraction's releases/v0.7 branch (see its package.json).
+const openzeppelinContractsVersion = "v5.0.0"
+
+// ensureForgeProject writes a foundry.toml pointing forge at the contracts/
+// source tree (if one isn't already present) and installs
+// @openzeppelin/contracts as a forge lib dependency (if not already
+// installed), so account-abstraction's unmodified Hardhat checkout can be
+// compiled with `forge inspect`.
+func (c *Compiler) ensureForgeProject(ctx context.Context) error {
+	foundryTomlPath := filepath.Join(c.contractsRootDir, "foundry.toml")
+	if _, err := os.Stat(foundryTomlPath); os.IsNotExist(err) {
+		// optimizer_runs/via_ir mirror hardhat.config.ts's overrides for
+		// EntryPoint.sol/SimpleAccount.sol: without them EntryPoint compiles
+		// to ~26.8KB, over the EIP-170 24576-byte contract size limit, and
+		// its on-chain deployment reverts (status 0) rather than failing to
+		// compile.
+		const foundryToml = `[profile.default]
+src = "contracts"
+out = "out"
+libs = ["lib"]
+remappings = ["@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/"]
+optimizer = true
+optimizer_runs = 1000000
+via_ir = true
+`
+		if err := os.WriteFile(foundryTomlPath, []byte(foundryToml), 0644); err != nil {
+			return fmt.Errorf("failed to write foundry.toml: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to stat foundry.toml: %w", err)
+	}
+
+	ozDir := filepath.Join(c.contractsRootDir, "lib", "openzeppelin-contracts")
+	if _, err := os.Stat(ozDir); os.IsNotExist(err) {
+		cmd := exec.CommandContext(ctx, "forge", "install", "OpenZeppelin/openzeppelin-contracts@"+openzeppelinContractsVersion)
+		cmd.Dir = c.contractsRootDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("forge install openzeppelin-contracts failed: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to stat openzeppelin-contracts lib: %w", err)
+	}
+
+	return nil
 }
 
 func (c *Compiler) compileTo(ctx context.Context, contractNames []string, outputFile string, includeDeployedBytecode bool) error {

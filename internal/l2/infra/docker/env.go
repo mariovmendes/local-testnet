@@ -9,9 +9,10 @@ import (
 	"strings"
 
 	"github.com/ethera-labs/local-testnet/configs"
+	"github.com/ethera-labs/local-testnet/internal/l2/l2config/crypto"
 	"github.com/ethera-labs/local-testnet/internal/l2/path"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
+	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 )
 
 // EnvBuilder constructs environment variables for docker-compose operations.
@@ -63,11 +64,26 @@ func (b *EnvBuilder) BuildComposeEnv(cfg configs.L2, gameFactoryAddr common.Addr
 	env["WALLET_ADDRESS"] = cfg.Wallet.Address
 	env["L1_EL_URL"] = cfg.L1ElURL
 	env["L1_CL_URL"] = cfg.L1ClURL
+	// Containers on the localnet-l2 network can't reach the host loopback
+	// address Kurtosis binds L1 ports to. Services that join kt-localnet
+	// (op-node, op-batcher, op-proposer, publisher) use these container-name
+	// addresses instead; see deployer.Apply for the equivalent op-deployer fix.
+	env["L1_EL_URL_INTERNAL"] = toKurtosisContainerURL(cfg.L1ElURL, kurtosisL1ELContainerName, kurtosisL1ELPort)
+	env["L1_CL_URL_INTERNAL"] = toKurtosisContainerURL(cfg.L1ClURL, kurtosisL1CLContainerName, kurtosisL1CLPort)
 	env["L1_CHAIN_ID"] = fmt.Sprintf("%d", cfg.L1ChainID)
 	env["ETHERA_NETWORK_NAME"] = cfg.EtheraNetworkName
 	env["COORDINATOR_PRIVATE_KEY"] = cfg.CoordinatorPrivateKey
 	env["SEQUENCER_PRIVATE_KEY"] = cfg.CoordinatorPrivateKey
 	env["SP_L1_SUPERBLOCK_CONTRACT"] = composeL2OOAddr.Hex()
+
+	// op-rbuilder's --ethera.coordinator-address must match the coordinator key the
+	// sidecar signs putInbox/ack/confirm/abort transactions with, so it's derived
+	// from the same CoordinatorPrivateKey rather than configured separately.
+	coordinatorAddress, err := crypto.AddressFromPrivateKey(cfg.CoordinatorPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive coordinator address: %w", err)
+	}
+	env["ETHERA_COORDINATOR_ADDRESS"] = coordinatorAddress
 
 	env["PUBLISHER_PATH"] = publisherPath
 
@@ -96,22 +112,24 @@ func (b *EnvBuilder) BuildComposeEnv(cfg configs.L2, gameFactoryAddr common.Addr
 		env["OP_RBUILDER_PATH"] = opRbuilderPath
 	}
 
-	// op-reth's P2P secret + the matching enode pubkey are always populated so the
-	// `--p2p-secret-key-hex` flag in docker-compose has a value regardless of feature flags.
-	// The pubkey is derived from the secret; one source of truth.
+	// The validator EL's P2P secret + matching enode pubkey are always populated so the
+	// flashblocks trusted-peer wiring has a value regardless of feature flags. Both op-reth
+	// (--p2p-secret-key-hex) and op-besu (--node-private-key-file) boot with this same key, so
+	// the enode op-rbuilder dials is stable across either client. Derived from the secret; one
+	// source of truth.
 	rethASK, rethAEnode, err := derivePeerKeys(cfg.Flashblocks.RollupAP2PSecretKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("rollup-a flashblocks p2p key: %w", err)
 	}
-	env["RETH_A_P2P_SECRET_KEY_HEX"] = rethASK
-	env["RETH_A_ENODE_PUBKEY"] = rethAEnode
+	env["VALIDATOR_EL_A_P2P_SECRET_KEY_HEX"] = rethASK
+	env["VALIDATOR_EL_A_ENODE_PUBKEY"] = rethAEnode
 
 	rethBSK, rethBEnode, err := derivePeerKeys(cfg.Flashblocks.RollupBP2PSecretKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("rollup-b flashblocks p2p key: %w", err)
 	}
-	env["RETH_B_P2P_SECRET_KEY_HEX"] = rethBSK
-	env["RETH_B_ENODE_PUBKEY"] = rethBEnode
+	env["VALIDATOR_EL_B_P2P_SECRET_KEY_HEX"] = rethBSK
+	env["VALIDATOR_EL_B_ENODE_PUBKEY"] = rethBEnode
 
 	if cfg.Sidecar.Enabled {
 		sidecarPath, err := b.ResolveRepoPath(cfg.Repositories[configs.RepositoryNameSidecar], configs.RepositoryNameSidecar)
@@ -228,6 +246,12 @@ func (b *EnvBuilder) MergePostDeployEnv(env map[string]string) {
 	if mb := b.readUniversalBridgeMailboxAddress(configs.L2ChainNameRollupB); mb != "" {
 		env["MAILBOX_B"] = mb
 	}
+	if ba := b.readContractAddress(configs.L2ChainNameRollupA, "ComposeL2ToL2Bridge"); ba != "" {
+		env["L2_BRIDGE_A"] = ba
+	}
+	if bb := b.readContractAddress(configs.L2ChainNameRollupB, "ComposeL2ToL2Bridge"); bb != "" {
+		env["L2_BRIDGE_B"] = bb
+	}
 	if ep := b.readContractAddress(configs.L2ChainNameRollupA, "EntryPoint"); ep != "" {
 		env["ENTRYPOINT_A"] = ep
 	}
@@ -286,12 +310,38 @@ func (b *EnvBuilder) readContractAddress(chainName configs.L2ChainName, contract
 // URL format respectively.
 func derivePeerKeys(secretHex string) (string, string, error) {
 	sk := strings.TrimPrefix(secretHex, "0x")
-	priv, err := crypto.HexToECDSA(sk)
+	priv, err := gethcrypto.HexToECDSA(sk)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid secret: %w", err)
 	}
-	pub := crypto.FromECDSAPub(&priv.PublicKey) // 65 bytes: 0x04 || X || Y
+	pub := gethcrypto.FromECDSAPub(&priv.PublicKey) // 65 bytes: 0x04 || X || Y
 	return sk, hex.EncodeToString(pub[1:]), nil
+}
+
+const (
+	kurtosisL1ELContainerName = "el-1-geth-lighthouse"
+	kurtosisL1ELPort          = 8545
+	kurtosisL1CLContainerName = "cl-1-lighthouse-geth"
+	kurtosisL1CLPort          = 4000
+)
+
+// toKurtosisContainerURL rewrites a host-facing L1 URL (127.0.0.1, localhost,
+// or host.docker.internal) to the Kurtosis container's name and in-network
+// port, so containers joined to the kt-localnet network can reach it.
+func toKurtosisContainerURL(hostURL, containerName string, containerPort int) string {
+	rewritten := strings.NewReplacer(
+		"host.docker.internal", containerName,
+		"127.0.0.1", containerName,
+		"localhost", containerName,
+	).Replace(hostURL)
+
+	if strings.Contains(rewritten, containerName+":") {
+		if colonIdx := strings.LastIndex(rewritten, ":"); colonIdx != -1 {
+			rewritten = fmt.Sprintf("%s:%d", rewritten[:colonIdx], containerPort)
+		}
+	}
+
+	return rewritten
 }
 
 // expandUserHome expands a leading ~ to the current user's home directory.

@@ -1,3 +1,5 @@
+import { EL_CLIENT_LABEL } from '../../config/chains'
+
 export type FlowMode = 'normal' | 'xt'
 
 interface FlowStep {
@@ -27,7 +29,7 @@ const flowContent: Record<FlowMode, FlowContent> = {
       },
       {
         title: 'Start block build (FCU)',
-        detail: 'op-node calls engine_forkchoiceUpdated on rollup-boost, which forwards to both op-reth (proposer) and op-rbuilder (builder).',
+        detail: `op-node calls engine_forkchoiceUpdated on rollup-boost, which forwards to both ${EL_CLIENT_LABEL} (proposer) and op-rbuilder (builder).`,
         subDetails: ['op-rbuilder starts building flashblocks immediately', 'Fallback block (deposits only) is built first'],
       },
       {
@@ -37,15 +39,15 @@ const flowContent: Record<FlowMode, FlowContent> = {
       },
       {
         title: 'Assemble final payload',
-        detail: 'op-node calls engine_getPayload; rollup-boost fetches the builder payload (all flashblocks merged) and the proposer fallback payload from op-reth.',
+        detail: `op-node calls engine_getPayload; rollup-boost fetches the builder payload (all flashblocks merged) and the proposer fallback payload from ${EL_CLIENT_LABEL}.`,
       },
       {
         title: 'Validate builder payload',
-        detail: 'rollup-boost validates the builder payload by calling op-reth engine_newPayload. This ensures the payload is valid before returning it.',
+        detail: `rollup-boost validates the builder payload by calling ${EL_CLIENT_LABEL} engine_newPayload. This ensures the payload is valid before returning it.`,
       },
       {
         title: 'Fallback on invalid',
-        detail: 'If validation fails, rollup-boost returns the op-reth payload instead. The builder payload is discarded.',
+        detail: `If validation fails, rollup-boost returns the ${EL_CLIENT_LABEL} payload instead. The builder payload is discarded.`,
       },
       {
         title: 'Finalize chain head',
@@ -63,7 +65,7 @@ const flowContent: Record<FlowMode, FlowContent> = {
         '2000ms: Block finalized (state root calculated)',
       ],
     },
-    note: 'If flashblocks are disabled, normal txs go directly to op-reth mempool instead.',
+    note: `If flashblocks are disabled, normal txs go directly to ${EL_CLIENT_LABEL} mempool instead.`,
   },
   xt: {
     title: 'Cross-Chain XT Flow',

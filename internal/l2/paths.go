@@ -14,7 +14,4 @@ const (
 
 	// networksDirName is the subdirectory for generated L2 network configurations
 	networksDirName = "networks"
-
-	// compiledContractsDirName is the subdirectory for compiled contract artifacts
-	compiledContractsDirName = "compiled-contracts"
 )

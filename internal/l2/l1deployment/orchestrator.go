@@ -9,6 +9,7 @@ import (
 	"github.com/ethera-labs/local-testnet/configs"
 	"github.com/ethera-labs/local-testnet/internal/l2/infra/docker"
 	"github.com/ethera-labs/local-testnet/internal/l2/infra/filesystem/json"
+	"github.com/ethera-labs/local-testnet/internal/l2/l1deployment/bootstrap"
 	"github.com/ethera-labs/local-testnet/internal/l2/l1deployment/deployer"
 	"github.com/ethera-labs/local-testnet/internal/l2/l1deployment/dispute"
 	"github.com/ethera-labs/local-testnet/internal/l2/l2config/crypto"
@@ -75,7 +76,7 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2) (DeploymentS
 	defer dockerClient.Close()
 
 	o.logger.Info("instantiating Deployer")
-	opDeployer := deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, dockerClient)
+	opDeployer := deployer.NewDeployer(o.rootDir, o.stateDir, cfg.Images[configs.ImageNameOpDeployer].Tag, deployer.KurtosisNetworkMode, dockerClient)
 
 	o.logger.Info("initializing Deployer")
 	if err := opDeployer.Init(ctx, cfg.L1ChainID, cfg.ChainConfigs); err != nil {
@@ -98,6 +99,11 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2) (DeploymentS
 		cfg.AltDA,
 	); err != nil {
 		return deploymentState, fmt.Errorf("failed to write intent: %w", err)
+	}
+
+	o.logger.Info("ensuring L1 chain is ready for op-deployer")
+	if err := bootstrap.EnsureL1Ready(ctx, cfg.L1ElURL, cfg.Wallet.Address); err != nil {
+		return deploymentState, fmt.Errorf("failed to prepare L1 chain: %w", err)
 	}
 
 	if err := opDeployer.Apply(ctx, cfg.L1ElURL, cfg.Wallet.PrivateKey, cfg.DeploymentTarget); err != nil {

@@ -57,6 +57,7 @@ type overlayPaths struct {
 	bundler     string
 	frontend    string
 	frontendDev string
+	opBesu      string
 }
 
 // Execute runs Phase 3: Build images, start services, deploy contracts
@@ -92,6 +93,10 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 	o.logger.Info("docker services built successfully")
 	serviceManager := services.NewManager(o.rootDir, dockerPath)
 
+	if overlays.opBesu != "" {
+		o.logger.Info("op-besu enabled, using op-besu as the validator execution client")
+		serviceManager.WithOpBesu(overlays.opBesu)
+	}
 	if overlays.altDA != "" {
 		serviceManager.WithAltDA(overlays.altDA)
 	}
@@ -182,6 +187,10 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 
 	if overlays.frontend != "" {
 		o.logger.Info("building and starting Ethera Labs Console")
+		// Label the validator EL node in the console as op-besu when that overlay is active.
+		if overlays.opBesu != "" {
+			envVars["EL_CLIENT_LABEL"] = "op-besu"
+		}
 		chainContracts := deployedContracts[configs.L2ChainNameRollupA]
 		envVars["CONTRACT_BRIDGE_ADDRESS"] = chainContracts[contracts.ContractNameComposeL2ToL2Bridge].Hex()
 		envVars["CONTRACT_TOKEN_ADDRESS"] = chainContracts[contracts.ContractNameTestToken].Hex()
@@ -210,6 +219,15 @@ func (o *Orchestrator) Execute(ctx context.Context, cfg configs.L2, gameFactoryA
 func (o *Orchestrator) resolveOverlayPaths(cfg configs.L2) (overlayPaths, error) {
 	var paths overlayPaths
 	var err error
+
+	// validator-el=op-besu: swap the op-reth validator EL (rollup-boost L2_URL) for op-besu.
+	if cfg.ValidatorEL == configs.ValidatorELOpBesu {
+		o.logger.Info("validator-el=op-besu: replacing op-reth validator EL with op-besu")
+		paths.opBesu, err = docker.EnsureOpBesuComposeFile(o.localnetDir)
+		if err != nil {
+			return overlayPaths{}, fmt.Errorf("failed to prepare op-besu docker file: %w", err)
+		}
+	}
 
 	if cfg.AltDA.Enabled {
 		o.logger.Info("altDA enabled, configuring DA server services")

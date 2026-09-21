@@ -76,6 +76,21 @@ L2 contracts are precompiled and embedded under `internal/l2/l2runtime/contracts
 contracts listed in `internal/l2/l2runtime/contracts/contract.go` are recognised - there is no fallback for legacy
 `Mailbox` or `PingPong` contracts. Regenerate the embedded artefact with `make run-l2-compile`.
 
+## Debugging
+
+When a service misbehaves, triage from the highest, cheapest level first and only then go
+deeper:
+
+1. **Provenance / freshness** - the `:dev` images are built from `local-path` source repos
+   (`sidecar/`, `op-rbuilder/`, `publisher/`, `contracts/`) pinned to a `branch:` in
+   `configs/config.yaml`. Check the running image build date against the source `git log`, and
+   whether each repo is on the expected branch and not behind upstream (`git rev-list --left-right
+   --count @{u}...HEAD`). A stale checkout / wrong branch is a common failure mode.
+2. **Configuration / wiring** - confirm `configs/config.yaml` (and the binary-dir copy) point at the
+   right branches, ports, and addresses; that the service is enabled and its dependencies are too.
+3. **Protocol internals** - only after 1-2 are clean, drop into calldata/trace/contract/source
+   forensics.
+
 ## Implementation Notes
 
 - Errors are wrapped with context using `errors.Join(err, errors.New("..."))` or `fmt.Errorf("...: %w", err)`.

@@ -1,6 +1,7 @@
 package dispute
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,31 +10,24 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func TestParseDeploymentContractsFromDeploymentsJSON(t *testing.T) {
+func TestParseDeploymentContractsFromConfigJSON(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	data := `{
-  "hoodi": {
-    "ComposeL2OutputOracle": {
-      "proxy": "0x1111111111111111111111111111111111111111"
-    },
-    "DisputeGameFactory": {
-      "proxy": "0x2222222222222222222222222222222222222222"
+  "l1": {
+    "deployed": {
+      "disputeGameFactory": "0x2222222222222222222222222222222222222222"
     }
   }
 }`
-	if err := os.WriteFile(filepath.Join(dir, "deployments.json"), []byte(data), 0644); err != nil {
-		t.Fatalf("failed to write deployments.json: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(data), 0644); err != nil {
+		t.Fatalf("failed to write config.json: %v", err)
 	}
 
 	svc := &Service{
 		contractsDir: dir,
-		cfg: configs.L2{
-			Dispute: configs.DisputeConfig{
-				NetworkName: "hoodi",
-			},
-		},
+		cfg:          configs.L2{},
 	}
 
 	got, err := svc.parseDeploymentContracts()
@@ -41,57 +35,87 @@ func TestParseDeploymentContractsFromDeploymentsJSON(t *testing.T) {
 		t.Fatalf("expected parse to succeed, got: %v", err)
 	}
 
-	if got.ComposeL2OutputOracleAddress != common.HexToAddress("0x1111111111111111111111111111111111111111") {
-		t.Fatalf("unexpected L2 output oracle address: %s", got.ComposeL2OutputOracleAddress)
-	}
 	if got.DisputeGameFactoryAddress != common.HexToAddress("0x2222222222222222222222222222222222222222") {
 		t.Fatalf("unexpected dispute game factory address: %s", got.DisputeGameFactoryAddress)
 	}
 }
 
-func TestParseDeploymentContractsFromComposeFallback(t *testing.T) {
+func TestParseDeploymentContractsMissingAddress(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	composeDir := filepath.Join(dir, "deployments", "compose")
-	if err := os.MkdirAll(composeDir, 0755); err != nil {
-		t.Fatalf("failed to create fallback directory: %v", err)
+	data := `{"l1": {"deployed": {}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(data), 0644); err != nil {
+		t.Fatalf("failed to write config.json: %v", err)
 	}
 
+	svc := &Service{
+		contractsDir: dir,
+		cfg:          configs.L2{},
+	}
+
+	if _, err := svc.parseDeploymentContracts(); err == nil {
+		t.Fatal("expected an error when disputeGameFactory is missing")
+	}
+}
+
+func TestWriteComposeConfigPreservesRollupsAndDeployed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
 	data := `{
-  "hoodi": {
-    "contracts": {
-      "ComposeL2OutputOracle": {
-        "proxyAddress": "0x3333333333333333333333333333333333333333"
-      },
-      "DisputeGameFactory": {
-        "proxyAddress": "0x4444444444444444444444444444444444444444"
-      }
+  "l1": {
+    "guardian": "0x0000000000000000000000000000000000000000",
+    "deployed": {
+      "disputeGameFactory": "0x2222222222222222222222222222222222222222"
     }
+  },
+  "rollups": {
+    "rollupA": {"chainId": "1"}
   }
 }`
-	if err := os.WriteFile(filepath.Join(composeDir, "hoodi.json"), []byte(data), 0644); err != nil {
-		t.Fatalf("failed to write fallback deployment file: %v", err)
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(data), 0644); err != nil {
+		t.Fatalf("failed to write config.json: %v", err)
 	}
 
 	svc := &Service{
 		contractsDir: dir,
 		cfg: configs.L2{
 			Dispute: configs.DisputeConfig{
-				NetworkName: "hoodi",
+				GuardianAddress: "0x1111111111111111111111111111111111111111",
+				OwnerAddress:    "0x1111111111111111111111111111111111111111",
 			},
 		},
 	}
 
-	got, err := svc.parseDeploymentContracts()
-	if err != nil {
-		t.Fatalf("expected parse to succeed, got: %v", err)
+	if err := svc.writeComposeConfig(); err != nil {
+		t.Fatalf("writeComposeConfig failed: %v", err)
 	}
 
-	if got.ComposeL2OutputOracleAddress != common.HexToAddress("0x3333333333333333333333333333333333333333") {
-		t.Fatalf("unexpected L2 output oracle address: %s", got.ComposeL2OutputOracleAddress)
+	out, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read updated config.json: %v", err)
 	}
-	if got.DisputeGameFactoryAddress != common.HexToAddress("0x4444444444444444444444444444444444444444") {
-		t.Fatalf("unexpected dispute game factory address: %s", got.DisputeGameFactoryAddress)
+
+	var doc struct {
+		L1 struct {
+			Guardian string          `json:"guardian"`
+			Deployed json.RawMessage `json:"deployed"`
+		} `json:"l1"`
+		Rollups json.RawMessage `json:"rollups"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("failed to parse updated config.json: %v", err)
+	}
+
+	if doc.L1.Guardian != "0x1111111111111111111111111111111111111111" {
+		t.Fatalf("guardian not updated: %s", doc.L1.Guardian)
+	}
+	if string(doc.L1.Deployed) == "" {
+		t.Fatal("deployed section was dropped")
+	}
+	if string(doc.Rollups) == "" {
+		t.Fatal("rollups section was dropped")
 	}
 }

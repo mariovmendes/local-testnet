@@ -12,6 +12,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { CurrentStatus, FlowStep, statusOf } from '../../stores/transactionStore'
+import { EL_CLIENT_LABEL } from '../../config/chains'
 import type { ServiceStatus } from '../../api/health'
 import type { FlowMode } from './TransactionFlowPanel'
 import RollupNode from './nodes/RollupNode'
@@ -303,13 +304,13 @@ export default function SystemDiagram({
       id: 'op-reth-a',
       type: 'op-reth',
       position: { x: 50, y: 530 },
-      data: { label: 'op-reth A', port: 18545, status: status.opRethA },
+      data: { label: `${EL_CLIENT_LABEL} A`, port: 18545, status: status.opRethA },
     })
     ns.push({
       id: 'op-reth-b',
       type: 'op-reth',
       position: { x: 750, y: 530 },
-      data: { label: 'op-reth B', port: 28545, status: status.opRethB },
+      data: { label: `${EL_CLIENT_LABEL} B`, port: 28545, status: status.opRethB },
     })
 
     ns.push({

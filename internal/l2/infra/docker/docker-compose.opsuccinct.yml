@@ -37,7 +37,7 @@ services:
     depends_on:
       op-succinct-postgres:
         condition: service_healthy
-      op-reth-a:
+      validator-el-a:
         condition: service_healthy
       op-node-a:
         condition: service_started
@@ -48,14 +48,28 @@ services:
       L1_RPC: "${L1_EL_URL}"
       L1_BEACON_RPC: "${L1_CL_URL}"
       L1_CONFIG_DIR: "/app/configs/L1"
-      L2_RPC: "http://op-reth-a:8545"
+      L2_RPC: "http://validator-el-a:8545"
       L2_NODE_RPC: "http://op-node-a:9545"
       PRIVATE_KEY: "${WALLET_PRIVATE_KEY}"
       NETWORK_PRIVATE_KEY: "${OP_SUCCINCT_NETWORK_PRIVATE_KEY:-0x0000000000000000000000000000000000000000000000000000000000000001}"
-      OP_SUCCINCT_MOCK: "true"
+      OP_SUCCINCT_MOCK: "${OP_SUCCINCT_MOCK:-true}"
+      # Defaults target mock proving. For SP1 network proving, set OP_SUCCINCT_MOCK=false,
+      # OP_SUCCINCT_SP1_PROVER=network, a network RPC URL, the gas/cycle limits, and a funded
+      # network signing key, then add RANGE_PROOF_STRATEGY/AGG_PROOF_STRATEGY (e.g. auction).
+      # Mock leaves the strategies unset, so the binary's "reserved" default applies.
+      SP1_PROVER: "${OP_SUCCINCT_SP1_PROVER:-mock}"
+      NETWORK_RPC_URL: "${OP_SUCCINCT_NETWORK_RPC_URL:-}"
+      RANGE_CYCLE_LIMIT: "${OP_SUCCINCT_RANGE_CYCLE_LIMIT:-1000000000000}"
+      RANGE_GAS_LIMIT: "${OP_SUCCINCT_RANGE_GAS_LIMIT:-1000000000000}"
+      AGG_GAS_LIMIT: "${OP_SUCCINCT_AGG_GAS_LIMIT:-1000000000000}"
+      MAX_PRICE_PER_PGU: "${OP_SUCCINCT_MAX_PRICE_PER_PGU:-300000000}"
+      AUCTION_TIMEOUT: "${OP_SUCCINCT_AUCTION_TIMEOUT:-60}"
       ENABLE_AGGREGATION: "true"
       RANGE_PROOF_INTERVAL: "${OP_SUCCINCT_RANGE_PROOF_INTERVAL:-10}"
       SUBMISSION_INTERVAL: "${OP_SUCCINCT_SUBMISSION_INTERVAL:-30}"
+      # op-node here runs without SafeDB enabled; let op-succinct fall back to the
+      # (more expensive) on-demand safe-head lookup instead of erroring out.
+      SAFE_DB_FALLBACK: "true"
       LOOP_INTERVAL: "${OP_SUCCINCT_LOOP_INTERVAL:-10}"
       SHARED_PUBLISHER_URL: "http://publisher:8081/v1/proofs/op-succinct"
       ALTDA_SERVER_URL: "${OP_SUCCINCT_ALTDA_SERVER_A:-}"
@@ -84,7 +98,7 @@ services:
     depends_on:
       op-succinct-postgres:
         condition: service_healthy
-      op-reth-b:
+      validator-el-b:
         condition: service_healthy
       op-node-b:
         condition: service_started
@@ -95,14 +109,28 @@ services:
       L1_RPC: "${L1_EL_URL}"
       L1_BEACON_RPC: "${L1_CL_URL}"
       L1_CONFIG_DIR: "/app/configs/L1"
-      L2_RPC: "http://op-reth-b:8545"
+      L2_RPC: "http://validator-el-b:8545"
       L2_NODE_RPC: "http://op-node-b:9545"
       PRIVATE_KEY: "${WALLET_PRIVATE_KEY}"
       NETWORK_PRIVATE_KEY: "${OP_SUCCINCT_NETWORK_PRIVATE_KEY:-0x0000000000000000000000000000000000000000000000000000000000000001}"
-      OP_SUCCINCT_MOCK: "true"
+      OP_SUCCINCT_MOCK: "${OP_SUCCINCT_MOCK:-true}"
+      # Defaults target mock proving. For SP1 network proving, set OP_SUCCINCT_MOCK=false,
+      # OP_SUCCINCT_SP1_PROVER=network, a network RPC URL, the gas/cycle limits, and a funded
+      # network signing key, then add RANGE_PROOF_STRATEGY/AGG_PROOF_STRATEGY (e.g. auction).
+      # Mock leaves the strategies unset, so the binary's "reserved" default applies.
+      SP1_PROVER: "${OP_SUCCINCT_SP1_PROVER:-mock}"
+      NETWORK_RPC_URL: "${OP_SUCCINCT_NETWORK_RPC_URL:-}"
+      RANGE_CYCLE_LIMIT: "${OP_SUCCINCT_RANGE_CYCLE_LIMIT:-1000000000000}"
+      RANGE_GAS_LIMIT: "${OP_SUCCINCT_RANGE_GAS_LIMIT:-1000000000000}"
+      AGG_GAS_LIMIT: "${OP_SUCCINCT_AGG_GAS_LIMIT:-1000000000000}"
+      MAX_PRICE_PER_PGU: "${OP_SUCCINCT_MAX_PRICE_PER_PGU:-300000000}"
+      AUCTION_TIMEOUT: "${OP_SUCCINCT_AUCTION_TIMEOUT:-60}"
       ENABLE_AGGREGATION: "true"
       RANGE_PROOF_INTERVAL: "${OP_SUCCINCT_RANGE_PROOF_INTERVAL:-10}"
       SUBMISSION_INTERVAL: "${OP_SUCCINCT_SUBMISSION_INTERVAL:-30}"
+      # op-node here runs without SafeDB enabled; let op-succinct fall back to the
+      # (more expensive) on-demand safe-head lookup instead of erroring out.
+      SAFE_DB_FALLBACK: "true"
       LOOP_INTERVAL: "${OP_SUCCINCT_LOOP_INTERVAL:-10}"
       SHARED_PUBLISHER_URL: "http://publisher:8081/v1/proofs/op-succinct"
       ALTDA_SERVER_URL: "${OP_SUCCINCT_ALTDA_SERVER_B:-}"

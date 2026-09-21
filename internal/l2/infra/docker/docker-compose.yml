@@ -9,6 +9,7 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     environment:
       SERVER_LISTEN_ADDR: ":8080"
       METRICS_ENABLED: "true"
@@ -21,7 +22,7 @@ services:
       CONSENSUS_TIMEOUT: "20s"
       CONSENSUS_PERIOD_DURATION: "60s"
       CONSENSUS_PROOF_WINDOW: "600s"
-      L1_RPC_ENDPOINT: "${L1_EL_URL}"
+      L1_RPC_ENDPOINT: "${L1_EL_URL_INTERNAL}"
       L1_SUPERBLOCK_CONTRACT: "${SP_L1_SUPERBLOCK_CONTRACT}"
       L1_SHARED_PUBLISHER_PK_HEX: "${SP_L1_SHARED_PUBLISHER_PK_HEX:-${WALLET_PRIVATE_KEY}}"
       L1_FROM_ADDRESS: "${SP_L1_FROM_ADDRESS:-${WALLET_ADDRESS}}"
@@ -29,7 +30,7 @@ services:
       L1_CHAIN_ID: "${L1_CHAIN_ID}"
       L1_ETHERA_NETWORK_NAME: "${ETHERA_NETWORK_NAME}"
       REGISTRY_PATH: "/workspace/.localnet/registry"  # Custom registry with local chain definitions
-      SETTLEMENT_L1_RPC_URL: "${L1_EL_URL}"
+      SETTLEMENT_L1_RPC_URL: "${L1_EL_URL_INTERNAL}"
       SETTLEMENT_L2OO_ADDRESS: "${SP_L1_SUPERBLOCK_CONTRACT}"
       SETTLEMENT_PROPOSER_KEY: "${SP_L1_SHARED_PUBLISHER_PK_HEX:-${WALLET_PRIVATE_KEY}}"
     volumes:
@@ -43,7 +44,7 @@ services:
       timeout: 5s
       retries: 5
 
-  op-reth-a:
+  validator-el-a:
     image: us-docker.pkg.dev/oplabs-tools-artifacts/images/op-reth:${OP_RETH_IMAGE_TAG}
     container_name: op-reth-a
     labels:
@@ -106,10 +107,11 @@ services:
           --disable-discovery \
           --max-peers=10 \
           --port=30303 \
-          --p2p-secret-key-hex=${RETH_A_P2P_SECRET_KEY_HEX} \
+          --p2p-secret-key-hex=${VALIDATOR_EL_A_P2P_SECRET_KEY_HEX} \
           --nat=none \
           --network-id=$${ROLLUP_CHAIN_ID} \
           --metrics=0.0.0.0:9898 \
+          --rpc.eth-proof-window=1000000 \
           --rollup.compute-pending-block
 
   op-node-a:
@@ -119,16 +121,18 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     depends_on:
-      op-reth-a:
+      validator-el-a:
         condition: service_healthy
     environment:
-      OP_NODE_L1_ETH_RPC: "${L1_EL_URL}"
-      OP_NODE_L1_BEACON: "${L1_CL_URL}"
-      OP_NODE_L2_ENGINE_RPC: "http://op-reth-a:8551"
+      OP_NODE_L1_ETH_RPC: "${L1_EL_URL_INTERNAL}"
+      OP_NODE_L1_BEACON: "${L1_CL_URL_INTERNAL}"
+      OP_NODE_L2_ENGINE_RPC: "http://validator-el-a:8551"
       OP_NODE_L2_ENGINE_AUTH: "/config/jwt.txt"
       OP_NODE_L2_ENGINE_KIND: "reth"
       OP_NODE_ROLLUP_CONFIG: "/config/rollup.json"
+      OP_NODE_ROLLUP_L1_CHAIN_CONFIG: "/config/l1-chainconfig.json"
       OP_NODE_P2P_DISABLE: "true"
       OP_NODE_SEQUENCER_ENABLED: "true"
       OP_NODE_SEQUENCER_L1_CONFS: "0"
@@ -151,11 +155,12 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     depends_on:
       - op-node-a
     environment:
-      OP_BATCHER_L1_ETH_RPC: "${L1_EL_URL}"
-      OP_BATCHER_L2_ETH_RPC: "http://op-reth-a:8545"
+      OP_BATCHER_L1_ETH_RPC: "${L1_EL_URL_INTERNAL}"
+      OP_BATCHER_L2_ETH_RPC: "http://validator-el-a:8545"
       OP_BATCHER_ROLLUP_RPC: "http://op-node-a:9545"
       OP_BATCHER_PRIVATE_KEY: "${WALLET_PRIVATE_KEY}"
       OP_BATCHER_POLL_INTERVAL: "1s"
@@ -175,12 +180,13 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     depends_on:
       - op-node-a
     env_file:
       - ${ROLLUP_A_CONFIG_PATH_CONTAINER:-../../networks/rollup-a}/runtime.env
     environment:
-      OP_PROPOSER_L1_ETH_RPC: "${L1_EL_URL}"
+      OP_PROPOSER_L1_ETH_RPC: "${L1_EL_URL_INTERNAL}"
       OP_PROPOSER_ROLLUP_RPC: "http://op-node-a:9545"
       OP_PROPOSER_PRIVATE_KEY: "${WALLET_PRIVATE_KEY}"
       OP_PROPOSER_POLL_INTERVAL: "12s"
@@ -192,7 +198,7 @@ services:
     ports:
       - "18560:8560"
 
-  op-reth-b:
+  validator-el-b:
     image: us-docker.pkg.dev/oplabs-tools-artifacts/images/op-reth:${OP_RETH_IMAGE_TAG}
     container_name: op-reth-b
     labels:
@@ -255,10 +261,11 @@ services:
           --disable-discovery \
           --max-peers=10 \
           --port=30303 \
-          --p2p-secret-key-hex=${RETH_B_P2P_SECRET_KEY_HEX} \
+          --p2p-secret-key-hex=${VALIDATOR_EL_B_P2P_SECRET_KEY_HEX} \
           --nat=none \
           --network-id=$${ROLLUP_CHAIN_ID} \
           --metrics=0.0.0.0:9898 \
+          --rpc.eth-proof-window=1000000 \
           --rollup.compute-pending-block
 
   op-node-b:
@@ -268,16 +275,18 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     depends_on:
-      op-reth-b:
+      validator-el-b:
         condition: service_healthy
     environment:
-      OP_NODE_L1_ETH_RPC: "${L1_EL_URL}"
-      OP_NODE_L1_BEACON: "${L1_CL_URL}"
-      OP_NODE_L2_ENGINE_RPC: "http://op-reth-b:8551"
+      OP_NODE_L1_ETH_RPC: "${L1_EL_URL_INTERNAL}"
+      OP_NODE_L1_BEACON: "${L1_CL_URL_INTERNAL}"
+      OP_NODE_L2_ENGINE_RPC: "http://validator-el-b:8551"
       OP_NODE_L2_ENGINE_AUTH: "/config/jwt.txt"
       OP_NODE_L2_ENGINE_KIND: "reth"
       OP_NODE_ROLLUP_CONFIG: "/config/rollup.json"
+      OP_NODE_ROLLUP_L1_CHAIN_CONFIG: "/config/l1-chainconfig.json"
       OP_NODE_P2P_DISABLE: "true"
       OP_NODE_SEQUENCER_ENABLED: "true"
       OP_NODE_SEQUENCER_L1_CONFS: "0"
@@ -300,11 +309,12 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     depends_on:
       - op-node-b
     environment:
-      OP_BATCHER_L1_ETH_RPC: "${L1_EL_URL}"
-      OP_BATCHER_L2_ETH_RPC: "http://op-reth-b:8545"
+      OP_BATCHER_L1_ETH_RPC: "${L1_EL_URL_INTERNAL}"
+      OP_BATCHER_L2_ETH_RPC: "http://validator-el-b:8545"
       OP_BATCHER_ROLLUP_RPC: "http://op-node-b:9545"
       OP_BATCHER_PRIVATE_KEY: "${WALLET_PRIVATE_KEY}"
       OP_BATCHER_POLL_INTERVAL: "1s"
@@ -324,12 +334,13 @@ services:
       - "stack=localnet-l2"
     networks:
       - localnet-l2
+      - kt-localnet
     depends_on:
       - op-node-b
     env_file:
       - ${ROLLUP_B_CONFIG_PATH_CONTAINER:-../../networks/rollup-b}/runtime.env
     environment:
-      OP_PROPOSER_L1_ETH_RPC: "${L1_EL_URL}"
+      OP_PROPOSER_L1_ETH_RPC: "${L1_EL_URL_INTERNAL}"
       OP_PROPOSER_ROLLUP_RPC: "http://op-node-b:9545"
       OP_PROPOSER_PRIVATE_KEY: "${WALLET_PRIVATE_KEY}"
       OP_PROPOSER_POLL_INTERVAL: "12s"
@@ -377,3 +388,10 @@ networks:
     name: localnet-l2
     labels:
       stack: localnet-l2
+  # Created by Kurtosis for the L1 enclave (see internal/l1/service.go). Must
+  # already be running (`make run-l1`) before `make run-l2`. Services that
+  # talk to L1 directly (op-node, op-batcher, op-proposer, publisher) join it
+  # to reach L1 by Kurtosis container name; see L1_EL_URL_INTERNAL /
+  # L1_CL_URL_INTERNAL in internal/l2/infra/docker/env.go.
+  kt-localnet:
+    external: true

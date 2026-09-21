@@ -17,6 +17,12 @@ import (
 
 const (
 	publicImageName = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer"
+
+	// KurtosisNetworkMode is the Docker network Kurtosis creates for the L1
+	// enclave ("kt-<enclave name>"). op-deployer must join it to reach L1
+	// services by container name, since containers can't reach the host's
+	// loopback address that Kurtosis binds its ports to.
+	KurtosisNetworkMode = "kt-localnet"
 )
 
 // Deployer wraps the op-deployer tool
@@ -25,18 +31,21 @@ type Deployer struct {
 	stateDir        string
 	imageWithTag    string
 	imageEntrypoint string
+	networkMode     string
 	docker          *docker.Client
 	logger          *slog.Logger
 }
 
 // NewDeployer creates a new op-deployer wrapper
 // imageTag should be the version tag (e.g., "v0.3.3")
-func NewDeployer(rootDir, stateDir, imageTag string, dockerClient *docker.Client) *Deployer {
+// networkMode is the Docker network to join so op-deployer can reach Kurtosis L1 services (see KurtosisNetworkMode).
+func NewDeployer(rootDir, stateDir, imageTag, networkMode string, dockerClient *docker.Client) *Deployer {
 	return &Deployer{
 		rootDir:         rootDir,
 		stateDir:        stateDir,
 		imageWithTag:    fmt.Sprintf("%s:%s", publicImageName, imageTag),
 		imageEntrypoint: "/usr/local/bin/op-deployer",
+		networkMode:     networkMode,
 		docker:          dockerClient,
 		logger:          logger.Named("deployer"),
 	}
@@ -89,10 +98,11 @@ func (o *Deployer) Init(ctx context.Context, l1ChainID int, l2Chains map[configs
 		Volumes: map[string]string{
 			absStateDir: "/work",
 		},
-		WorkDir:    "/work",
-		User:       fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		AutoRemove: true,
-		StreamLogs: true,
+		WorkDir:     "/work",
+		User:        fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		NetworkMode: o.networkMode,
+		AutoRemove:  true,
+		StreamLogs:  true,
 	})
 
 	if err != nil {
@@ -138,6 +148,24 @@ func (o *Deployer) Apply(ctx context.Context, l1RpcURL, deployerPrivateKey, depl
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
+	// op-deployer runs inside the kt-localnet Docker network. Kurtosis binds its
+	// EL port to 127.0.0.1 on the host, which is unreachable from inside Docker
+	// (127.0.0.1 resolves to the container itself; host.docker.internal resolves
+	// to the Docker bridge gateway, also not Kurtosis's loopback port).
+	// Replace all host-side addresses with the Kurtosis container name so the
+	// request stays on the Docker network.
+	dockerL1URL := strings.NewReplacer(
+		"host.docker.internal", "el-1-geth-lighthouse",
+		"127.0.0.1", "el-1-geth-lighthouse",
+		"localhost", "el-1-geth-lighthouse",
+	).Replace(l1RpcURL)
+	// Replace whatever host port was configured with the container-internal port 8545.
+	if strings.Contains(dockerL1URL, "el-1-geth-lighthouse:") {
+		if colonIdx := strings.LastIndex(dockerL1URL, ":"); colonIdx != -1 {
+			dockerL1URL = dockerL1URL[:colonIdx] + ":8545"
+		}
+	}
+
 	_, err = o.docker.Run(ctx, docker.RunOptions{
 		Image:      o.imageWithTag,
 		Entrypoint: []string{o.imageEntrypoint},
@@ -148,16 +176,17 @@ func (o *Deployer) Apply(ctx context.Context, l1RpcURL, deployerPrivateKey, depl
 		Env: []string{
 			"HOME=/work",
 			"DEPLOYER_CACHE_DIR=/work/.cache",
-			fmt.Sprintf("L1_RPC_URL=%s", l1RpcURL),
+			fmt.Sprintf("L1_RPC_URL=%s", dockerL1URL),
 			fmt.Sprintf("DEPLOYER_PRIVATE_KEY=%s", deployerPrivateKey),
 		},
 		Volumes: map[string]string{
 			absStateDir: "/work",
 		},
-		WorkDir:    "/work",
-		User:       fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		AutoRemove: true,
-		StreamLogs: true,
+		WorkDir:     "/work",
+		User:        fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		NetworkMode: o.networkMode,
+		AutoRemove:  true,
+		StreamLogs:  true,
 	})
 
 	if err != nil {

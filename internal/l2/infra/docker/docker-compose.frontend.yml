@@ -10,6 +10,7 @@ services:
         VITE_CHAIN_A_ID: "${ROLLUP_A_CHAIN_ID}"
         VITE_CHAIN_B_ID: "${ROLLUP_B_CHAIN_ID}"
         VITE_FLASHBLOCKS_ENABLED: "true"
+        VITE_EL_CLIENT_LABEL: "${EL_CLIENT_LABEL:-op-reth}"
         VITE_CHAIN_A_BUILDER_RPC: "http://localhost:${FLASHBLOCKS_ROLLUP_A_RPC_PORT}"
         VITE_CHAIN_A_OP_RETH_RPC: "http://localhost:${ROLLUP_A_RPC_PORT}"
         VITE_CHAIN_B_BUILDER_RPC: "http://localhost:${FLASHBLOCKS_ROLLUP_B_RPC_PORT}"

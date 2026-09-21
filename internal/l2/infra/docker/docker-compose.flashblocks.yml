@@ -62,7 +62,8 @@ services:
       - --port=30303
       - --nat=none
       - --trusted-only
-      - --trusted-peers=enode://${RETH_A_ENODE_PUBKEY}@op-reth-a:30303
+      - --trusted-peers=enode://${VALIDATOR_EL_A_ENODE_PUBKEY}@validator-el-a:30303
+      - --ethera.coordinator-address=${ETHERA_COORDINATOR_ADDRESS}
 
   # Block builder for Chain B
   op-rbuilder-b:
@@ -108,7 +109,8 @@ services:
       - --port=30303
       - --nat=none
       - --trusted-only
-      - --trusted-peers=enode://${RETH_B_ENODE_PUBKEY}@op-reth-b:30303
+      - --trusted-peers=enode://${VALIDATOR_EL_B_ENODE_PUBKEY}@validator-el-b:30303
+      - --ethera.coordinator-address=${ETHERA_COORDINATOR_ADDRESS}
 
   # Multiplexer for Chain A - routes between op-reth (fallback) and op-rbuilder (builder)
   rollup-boost-a:
@@ -120,9 +122,9 @@ services:
       - localnet-l2
     depends_on:
       - op-rbuilder-a
-      - op-reth-a
+      - validator-el-a
     environment:
-      L2_URL: "http://op-reth-a:8551"
+      L2_URL: "http://validator-el-a:8551"
       L2_JWT_PATH: "/config/jwt.txt"
       BUILDER_URL: "http://op-rbuilder-a:8551"
       BUILDER_JWT_PATH: "/config/jwt.txt"
@@ -152,9 +154,9 @@ services:
       - localnet-l2
     depends_on:
       - op-rbuilder-b
-      - op-reth-b
+      - validator-el-b
     environment:
-      L2_URL: "http://op-reth-b:8551"
+      L2_URL: "http://validator-el-b:8551"
       L2_JWT_PATH: "/config/jwt.txt"
       BUILDER_URL: "http://op-rbuilder-b:8551"
       BUILDER_JWT_PATH: "/config/jwt.txt"

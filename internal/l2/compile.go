@@ -29,7 +29,10 @@ var compileCmd = &cobra.Command{
 
 		cloner := git.NewCloner()
 		servicesDir := filepath.Join(rootDir, localnetDirName, servicesDirName)
-		outputDir := filepath.Join(rootDir, localnetDirName, compiledContractsDirName)
+		// outputDir must be the go:embed source (internal/l2/l2runtime/contracts/compiled),
+		// not a .localnet/ scratch dir - the deploy binary embeds compiled/contracts.json
+		// at build time, so `l2 compile` has to write there directly to take effect.
+		outputDir := filepath.Join(rootDir, "internal", "l2", "l2runtime", "contracts", "compiled")
 
 		if err := compileEtheraContracts(ctx, cloner, servicesDir, outputDir); err != nil {
 			return err
@@ -50,18 +53,16 @@ var compileCmd = &cobra.Command{
 // in [contracts.Contracts] into `compiled/contracts.json`. The repository is
 // required; the command fails when it is not configured.
 func compileEtheraContracts(ctx context.Context, cloner *git.Cloner, servicesDir, outputDir string) error {
-	repo, ok := findRepository(configs.RepositoryNameEtheraContracts)
+	repoDir, ok, err := resolveRepositoryDir(ctx, cloner, servicesDir, configs.RepositoryNameEtheraContracts)
+	if err != nil {
+		return fmt.Errorf("failed to resolve ethera-contracts repository: %w", err)
+	}
 	if !ok {
 		return fmt.Errorf("could not find: '%s' repository in the configuration", configs.RepositoryNameEtheraContracts)
 	}
 
-	slog.With("name", repo.Name).Info("cloning ethera-contracts repository")
-	if err := cloner.Clone(ctx, servicesDir, repo); err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
-	}
-
 	compiler := contracts.NewCompiler(
-		filepath.Join(servicesDir, "ethera-contracts", "L2"),
+		repoDir,
 		outputDir,
 	)
 
@@ -82,20 +83,18 @@ func compileEtheraContracts(ctx context.Context, cloner *git.Cloner, servicesDir
 // The repository is optional: when it is not configured the function logs and
 // returns nil so stacks that do not run the ERC-4337 bundler are unaffected.
 func compileEntryPoint(ctx context.Context, cloner *git.Cloner, servicesDir, outputDir string) error {
-	repo, ok := findRepository(configs.RepositoryNameAccountAbstraction)
+	repoDir, ok, err := resolveRepositoryDir(ctx, cloner, servicesDir, configs.RepositoryNameAccountAbstraction)
+	if err != nil {
+		return fmt.Errorf("failed to resolve account-abstraction repository: %w", err)
+	}
 	if !ok {
 		slog.With("name", configs.RepositoryNameAccountAbstraction).
 			Info("account-abstraction repository not configured; skipping EntryPoint compilation")
 		return nil
 	}
 
-	slog.With("name", repo.Name).Info("cloning account-abstraction repository")
-	if err := cloner.Clone(ctx, servicesDir, repo); err != nil {
-		return fmt.Errorf("failed to clone account-abstraction: %w", err)
-	}
-
 	compiler := contracts.NewCompiler(
-		filepath.Join(servicesDir, "account-abstraction"),
+		repoDir,
 		outputDir,
 	)
 
@@ -107,20 +106,46 @@ func compileEntryPoint(ctx context.Context, cloner *git.Cloner, servicesDir, out
 	return nil
 }
 
-// findRepository looks up a repository entry from the parsed L2 configuration
-// and adapts it to the [git.Repository] shape expected by [git.Cloner]. The
+// resolveRepositoryDir looks up a repository entry from the parsed L2
+// configuration and returns the local directory its sources live in. When
+// `local-path` is set it is used as-is (checking out `branch` if also set);
+// otherwise the repository is cloned from `url` into servicesDir. The
 // boolean is false when the entry is absent so callers can treat the
 // repository as optional.
-func findRepository(name configs.RepositoryName) (git.Repository, bool) {
+func resolveRepositoryDir(ctx context.Context, cloner *git.Cloner, servicesDir string, name configs.RepositoryName) (string, bool, error) {
 	repo, ok := configs.Values.L2.Repositories[name]
 	if !ok {
-		return git.Repository{}, false
+		return "", false, nil
 	}
-	return git.Repository{
+
+	if repo.LocalPath != "" {
+		absPath, err := filepath.Abs(repo.LocalPath)
+		if err != nil {
+			return "", true, fmt.Errorf("failed to resolve absolute path for local repository %s: %w", name, err)
+		}
+		slog.With("name", name, "local_path", repo.LocalPath, "resolved_path", absPath).Info("using local repository path; skipping clone")
+		if repo.Branch != "" {
+			if err := cloner.CheckoutBranch(ctx, absPath, repo.Branch); err != nil {
+				return "", true, fmt.Errorf("local repository %s: %w", name, err)
+			}
+		}
+		return absPath, true, nil
+	}
+
+	if repo.URL == "" {
+		return "", true, fmt.Errorf("repository %s has neither URL nor local-path set", name)
+	}
+
+	slog.With("name", name).Info("cloning repository")
+	gitRepo := git.Repository{
 		Name: string(name),
 		URL:  repo.URL,
 		Ref:  repo.Branch,
-	}, true
+	}
+	if err := cloner.Clone(ctx, servicesDir, gitRepo); err != nil {
+		return "", true, fmt.Errorf("failed to clone repository: %w", err)
+	}
+	return filepath.Join(servicesDir, string(name)), true, nil
 }
 
 // contractNames flattens a contract-name allowlist into a deterministically

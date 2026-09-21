@@ -7,6 +7,10 @@ l2:
   l1-el-url: http://127.0.0.1:8080
   l1-cl-url: http://127.0.0.2:8080
   ethera-labs-name: network-name # Ethera Labs network name for publisher registry, e.g. hoodi
+  # Rollup-boost validator execution client (the EL behind L2_URL): op-reth (default) or op-besu.
+  # op-besu runs the full Isthmus schedule (Prague EVM, final EIP-7685, EIP-2935) and requires
+  # flashblocks plus a locally-built local/op-besu:dev image (OP_BESU_IMAGE to override the tag).
+  validator-el: op-reth
   coordinator-private-key: 0x0000000000000000000000000000000000000000000000000000000000000000  # Must differ from wallet.private-key to avoid nonce collisions
   wallet:
     private-key: 0000000000000000000000000000000000000000000000000000000000000000

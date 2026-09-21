@@ -17,8 +17,15 @@ l2ContractsLocator = "embedded"
   sequencerFeeVaultRecipient = "{{$.Sequencer}}"
   eip1559DenominatorCanyon = 250
   eip1559Denominator = 50
-  eip1559Elasticity = 6
-  gasLimit = 60000000
+  # The EIP-1559 gas target is gasLimit/eip1559Elasticity, and the basefee only
+  # holds still when sustained demand stays under it. 60M/6 gave a 10M target
+  # while the stress suite sustained ~33M per block — 3.3x over — so the basefee
+  # compounded ~0.9%/block and diverged 1 -> 241 gwei, which is what priced XTs
+  # out mid-run. 120M/2 puts the target at 60M, leaving that same load at 55% of
+  # target so the basefee decays to minBaseFee and stays there.
+  # Raise the target again before raising the offered load past ~55M/block.
+  eip1559Elasticity = 2
+  gasLimit = 120000000
   operatorFeeScalar = 0
   operatorFeeConstant = 0
   minBaseFee = 0
