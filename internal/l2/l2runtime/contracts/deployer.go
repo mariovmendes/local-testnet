@@ -319,7 +319,9 @@ func (d *Deployer) deployToChain(ctx context.Context, rpcURL, coordinatorPrivate
 	addresses[ContractNameComposeETHLiquidity] = ethLiquidityAddr.Hex()
 	d.logger.Info("deployed", "contract", ContractNameComposeETHLiquidity, "address", ethLiquidityAddr.Hex())
 
-	bridgeAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameComposeL2ToL2Bridge], ubMailboxAddr, cetFactoryAddr, ethLiquidityAddr, coordinatorAddr)
+	// Baseline contracts (contracts-latest main) have no saga/compensation layer, so
+	// the bridge constructor takes no coordinator: the mailbox still holds COORDINATOR.
+	bridgeAddr, err := d.deployContract(ctx, client, privateKey, chainID, contracts[ContractNameComposeL2ToL2Bridge], ubMailboxAddr, cetFactoryAddr, ethLiquidityAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deploy ComposeL2ToL2Bridge: %w", err)
 	}
